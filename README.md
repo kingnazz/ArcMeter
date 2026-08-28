@@ -62,7 +62,7 @@ The renderer has a browser-safe empty state for visual development, but it never
 ## Supabase setup
 
 1. Create a Supabase project.
-2. Apply `supabase/migrations/202608280001_arcmeter_v1.sql` with the Supabase CLI or dashboard migration workflow.
+2. Apply the migrations in `supabase/migrations/` with the Supabase CLI or dashboard migration workflow.
 3. Run `supabase/tests/rls_verification.sql` against a disposable/local database.
 4. Copy `.env.example` to `.env` and set only the project URL and client-safe publishable/anon key.
 5. Never use a service-role key in the desktop environment.

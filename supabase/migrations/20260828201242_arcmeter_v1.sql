@@ -1,4 +1,5 @@
 -- ArcMeter V1 cloud metadata schema.
+-- Remote migration version: 20260828201242.
 -- The desktop uses only the client-safe Supabase key. Ownership is always derived from auth.uid().
 
 create extension if not exists pgcrypto;
