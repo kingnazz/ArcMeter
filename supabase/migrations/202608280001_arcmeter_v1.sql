@@ -3,6 +3,9 @@
 
 create extension if not exists pgcrypto;
 
+create schema if not exists private;
+revoke all on schema private from public, anon, authenticated;
+
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   email text,
@@ -23,6 +26,8 @@ create table public.devices (
   updated_at timestamptz not null default now(),
   unique (id, user_id)
 );
+
+create index devices_user_id_idx on public.devices(user_id);
 
 create table public.usage_events (
   id text primary key check (char_length(id) = 64),
@@ -85,7 +90,7 @@ create table public.pricing (
   unique (provider, model_pattern, effective_from, min_input_tokens, version)
 );
 
-create or replace function public.set_updated_at()
+create or replace function private.set_updated_at()
 returns trigger
 language plpgsql
 security invoker
@@ -97,16 +102,18 @@ begin
 end;
 $$;
 
-create trigger profiles_set_updated_at before update on public.profiles
-for each row execute function public.set_updated_at();
-create trigger devices_set_updated_at before update on public.devices
-for each row execute function public.set_updated_at();
-create trigger usage_events_set_updated_at before update on public.usage_events
-for each row execute function public.set_updated_at();
-create trigger subscriptions_set_updated_at before update on public.subscriptions
-for each row execute function public.set_updated_at();
+revoke all on function private.set_updated_at() from public, anon, authenticated;
 
-create or replace function public.handle_new_user()
+create trigger profiles_set_updated_at before update on public.profiles
+for each row execute function private.set_updated_at();
+create trigger devices_set_updated_at before update on public.devices
+for each row execute function private.set_updated_at();
+create trigger usage_events_set_updated_at before update on public.usage_events
+for each row execute function private.set_updated_at();
+create trigger subscriptions_set_updated_at before update on public.subscriptions
+for each row execute function private.set_updated_at();
+
+create or replace function private.handle_new_user()
 returns trigger
 language plpgsql
 security definer
@@ -119,9 +126,11 @@ begin
 end;
 $$;
 
+revoke all on function private.handle_new_user() from public, anon, authenticated;
+
 create trigger on_auth_user_created
 after insert or update of email on auth.users
-for each row execute function public.handle_new_user();
+for each row execute function private.handle_new_user();
 
 alter table public.profiles enable row level security;
 alter table public.devices enable row level security;
@@ -164,6 +173,7 @@ using ((select auth.uid()) = user_id);
 create policy pricing_read_authenticated on public.pricing for select to authenticated using (true);
 
 revoke all on public.profiles, public.devices, public.usage_events, public.subscriptions, public.pricing from anon;
+grant usage on schema public to authenticated;
 grant select, update on public.profiles to authenticated;
 grant select, insert, update, delete on public.devices, public.usage_events, public.subscriptions to authenticated;
 grant select on public.pricing to authenticated;
