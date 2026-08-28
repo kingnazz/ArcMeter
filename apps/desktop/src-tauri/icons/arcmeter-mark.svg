@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">ArcMeter</title>
+  <rect width="512" height="512" rx="112" fill="#090b0a"/>
+  <path d="M116 352V238" stroke="#9aa39d" stroke-width="42" stroke-linecap="round"/>
+  <path d="M196 352V184" stroke="#d8ded9" stroke-width="42" stroke-linecap="round"/>
+  <path d="M276 352V126" stroke="#38e07b" stroke-width="42" stroke-linecap="round"/>
+  <path d="M356 352v-78" stroke="#20a85a" stroke-width="42" stroke-linecap="round"/>
+  <path d="M96 390h320" stroke="#27302b" stroke-width="20" stroke-linecap="round"/>
+</svg>

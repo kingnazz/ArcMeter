@@ -1,0 +1,36 @@
+[package]
+name = "arcmeter"
+version = "0.1.0"
+description = "Local-first AI usage intelligence"
+authors = ["ArcMeter"]
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "arcmeter_lib"
+# Windows and macOS desktop builds link the Rust core directly. Mobile FFI targets are
+# intentionally out of V1 scope, so no exported C dynamic library is produced.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+chrono = { version = "=0.4.42", features = ["serde"] }
+directories = "=6.0.0"
+hex = "=0.4.3"
+keyring = { version = "=4.1.6", features = ["v1", "windows-native-keyring-store", "apple-native-keyring-store"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "native-tls"] }
+rusqlite = { version = "=0.40.2", features = ["bundled", "chrono"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+sha2 = "=0.10.9"
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
+tauri-plugin-autostart = "=2.5.1"
+thiserror = "=2.0.18"
+tokio = { version = "=1.49.0", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing = "=0.1.44"
+uuid = { version = "=1.21.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "=3.26.0"

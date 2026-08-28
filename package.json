@@ -1,0 +1,18 @@
+{
+  "name": "arcmeter",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @arcmeter/desktop dev",
+    "tauri": "pnpm --filter @arcmeter/desktop tauri",
+    "build": "pnpm --filter @arcmeter/desktop build",
+    "typecheck": "pnpm --filter @arcmeter/desktop typecheck",
+    "lint": "pnpm --filter @arcmeter/desktop lint",
+    "test": "pnpm --filter @arcmeter/desktop test",
+    "check": "pnpm typecheck && pnpm lint && pnpm test"
+  }
+}
