@@ -64,6 +64,11 @@ export async function scanNow(): Promise<ScanReport> {
   return invoke<ScanReport>("scan_now");
 }
 
+export async function getActivityPage(range: RangeKey, limit: number, offset: number): Promise<DashboardSnapshot["activity"]> {
+  if (!isTauri()) return [];
+  return invoke<DashboardSnapshot["activity"]>("activity_page", { range, limit, offset });
+}
+
 export async function saveSubscription(subscription: Subscription): Promise<Subscription[]> {
   if (!isTauri()) return [subscription];
   return invoke<Subscription[]>("save_subscription", { subscription });

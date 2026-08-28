@@ -6,8 +6,11 @@ import { ProviderMark } from "./ProviderMark";
 
 interface ActivityProps {
   items: ActivityItem[];
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => Promise<void>;
 }
-export function Activity({ items }: ActivityProps) {
+export function Activity({ items, hasMore = false, loadingMore = false, onLoadMore }: ActivityProps) {
   const [provider, setProvider] = useState("all");
   const [device, setDevice] = useState("all");
   const [project, setProject] = useState("all");
@@ -49,43 +52,46 @@ export function Activity({ items }: ActivityProps) {
       </section>
 
       <div className="activity-summary">
-        <div><strong>{filtered.length.toLocaleString()}</strong> events</div>
+        <div><strong>{filtered.length.toLocaleString()}</strong> shown · {items.length.toLocaleString()} loaded</div>
         <span>Prompts and responses are never displayed or stored by ArcMeter.</span>
       </div>
 
       {groups.length === 0 ? (
         <div className="substantial-empty"><Filter /><h2>No activity matches</h2><p>Adjust your filters or scan local sources again.</p></div>
       ) : (
-        <div className="timeline">
-          {groups.map(([date, rows]) => (
-            <section className="timeline-day" key={date}>
-              <div className="timeline-date"><span>{date}</span><small>{formatTokens(rows.reduce((sum, item) => sum + item.totalTokens, 0))} measured</small></div>
-              <div className="timeline-rows">
-                {rows.map((item) => (
-                  <div className={`activity-row ${expanded === item.id ? "expanded" : ""}`} key={item.id}>
-                    <button type="button" className="activity-main" onClick={() => setExpanded(expanded === item.id ? null : item.id)} aria-expanded={expanded === item.id}>
-                      <time>{formatActivityTime(item.occurredAt)}</time>
-                      <ProviderMark provider={item.provider} />
-                      <div className="activity-identity"><strong>{providerLabel(item.provider)}</strong><span>{item.projectName ?? "Unknown project"}</span></div>
-                      <div className="activity-model"><span>{item.model ?? "Model unavailable"}</span><small>{item.deviceName}</small></div>
-                      <div className="activity-tokens"><strong>{formatTokens(item.totalTokens)}</strong><span>{item.measurementKind.replace("_", " ")}</span></div>
-                      <ChevronDown className="activity-chevron" />
-                    </button>
-                    {expanded === item.id ? (
-                      <div className="token-detail">
-                        <TokenPart label="Input" value={item.inputTokens} />
-                        <TokenPart label="Cached input" value={item.cachedInputTokens} />
-                        <TokenPart label="Output" value={item.outputTokens} />
-                        <TokenPart label="Reasoning" value={item.reasoningTokens} />
-                        <div className="identity-note">Deterministic event <code>{item.id.slice(0, 12)}</code></div>
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
+        <>
+          <div className="timeline">
+            {groups.map(([date, rows]) => (
+              <section className="timeline-day" key={date}>
+                <div className="timeline-date"><span>{date}</span><small>{formatTokens(rows.reduce((sum, item) => sum + item.totalTokens, 0))} measured</small></div>
+                <div className="timeline-rows">
+                  {rows.map((item) => (
+                    <div className={`activity-row ${expanded === item.id ? "expanded" : ""}`} key={item.id}>
+                      <button type="button" className="activity-main" onClick={() => setExpanded(expanded === item.id ? null : item.id)} aria-expanded={expanded === item.id}>
+                        <time>{formatActivityTime(item.occurredAt)}</time>
+                        <ProviderMark provider={item.provider} />
+                        <div className="activity-identity"><strong>{providerLabel(item.provider)}</strong><span>{item.projectName ?? "Unknown project"}</span></div>
+                        <div className="activity-model"><span>{item.model ?? "Model unavailable"}</span><small>{item.deviceName}</small></div>
+                        <div className="activity-tokens"><strong>{formatTokens(item.totalTokens)}</strong><span>{item.measurementKind.replace("_", " ")}</span></div>
+                        <ChevronDown className="activity-chevron" />
+                      </button>
+                      {expanded === item.id ? (
+                        <div className="token-detail">
+                          <TokenPart label="Input" value={item.inputTokens} />
+                          <TokenPart label="Cached input" value={item.cachedInputTokens} />
+                          <TokenPart label="Output" value={item.outputTokens} />
+                          <TokenPart label="Reasoning" value={item.reasoningTokens} />
+                          <div className="identity-note">Deterministic event <code>{item.id.slice(0, 12)}</code></div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+          {hasMore && onLoadMore ? <div className="activity-load-more"><button type="button" className="secondary-button" disabled={loadingMore} onClick={() => void onLoadMore()}>{loadingMore ? "Loading older activity…" : "Load older activity"}</button></div> : null}
+        </>
       )}
     </div>
   );

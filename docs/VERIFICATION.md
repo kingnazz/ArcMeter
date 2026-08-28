@@ -10,10 +10,10 @@ Verification date: 2026-08-28 on Windows.
 - Rust formatting: passed.
 - Rust Clippy with warnings denied: passed.
 - Rust core suite: 22 passed; the two environment-specific smoke tests are ignored by default.
-- Production React build: passed (`230.19 kB` JavaScript and `27.23 kB` CSS before gzip).
+- Production React build: passed (`231.08 kB` JavaScript and `27.30 kB` CSS before gzip).
 - Tauri production build and NSIS packaging: passed.
 
-The private-test installer is `artifacts/windows/ArcMeter_0.1.0_x64-setup.exe` (5,677,287 bytes, SHA-256 `26CC814C8700A607B049BE6610B3ABFC442CC17C84984DBC9F247109D2087817`). It is intentionally unsigned; code signing was explicitly outside Phase 1.
+The private-test installer is `artifacts/windows/ArcMeter_0.1.0_x64-setup.exe` (5,677,866 bytes, SHA-256 `485812E364F2D674667B78E16B41DD02F4BCF24B509BF072B221B82044700F71`). It is intentionally unsigned; code signing was explicitly outside Phase 1.
 
 The final dedicated read-only Codex snapshot test found 1,926 measured events across 41 files and 220,936,594 tokens. Re-reading the identical snapshot inserted zero records. An earlier packaged-app launch against the live profile produced a SQLite ledger with 1,875 measured events and 215,215,638 tokens. After a process restart it retained one device identity, passed `PRAGMA integrity_check`, resumed its 41 collector checkpoints, and grew only for newly written Codex usage (1,888 events and 216,188,675 tokens at the second check).
 

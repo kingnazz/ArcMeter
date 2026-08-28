@@ -92,8 +92,11 @@ describe("important product states", () => {
   });
 
   it("renders measured activity and exposes token parts without conversation content", () => {
+    const onLoadMore = vi.fn(() => Promise.resolve());
     render(
       <Activity
+        hasMore
+        onLoadMore={onLoadMore}
         items={[
           {
             id: "a".repeat(64),
@@ -118,6 +121,8 @@ describe("important product states", () => {
     expect(screen.getByText("Cached input")).toBeInTheDocument();
     expect(screen.getByText("Deterministic event", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText(/prompt content/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load older activity" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
   });
 
   it("surfaces collector diagnostics without revealing a filesystem path", () => {

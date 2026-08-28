@@ -7,7 +7,7 @@ import { Insights } from "./components/Insights";
 import { Overview } from "./components/Overview";
 import { RangeSelector } from "./components/RangeSelector";
 import { Settings } from "./components/Settings";
-import { getDashboard, renameDevice, saveSubscription, scanNow, syncCloudNow } from "./lib/api";
+import { getActivityPage, getDashboard, renameDevice, saveSubscription, scanNow, syncCloudNow } from "./lib/api";
 import { formatRelativeTime } from "./lib/format";
 import type { DashboardSnapshot, NavKey, RangeKey, Subscription } from "./types";
 
@@ -24,12 +24,15 @@ export default function App() {
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [loadingActivity, setLoadingActivity] = useState(false);
+  const [activityHasMore, setActivityHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (nextRange: RangeKey = range) => {
     try {
       const snapshot = await getDashboard(nextRange);
       setData(snapshot);
+      setActivityHasMore(snapshot.activity.length === 200);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -98,6 +101,24 @@ export default function App() {
     await load();
   }
 
+  async function loadOlderActivity() {
+    if (!data || loadingActivity) return;
+    setLoadingActivity(true);
+    try {
+      const older = await getActivityPage(range, 200, data.activity.length);
+      setData((current) => {
+        if (!current) return current;
+        const seen = new Set(current.activity.map((item) => item.id));
+        return { ...current, activity: [...current.activity, ...older.filter((item) => !seen.has(item.id))] };
+      });
+      setActivityHasMore(older.length === 200);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoadingActivity(false);
+    }
+  }
+
   const title = navigation.find((item) => item.key === nav)?.label ?? "ArcMeter";
 
   return (
@@ -135,7 +156,7 @@ export default function App() {
         {loading && !data ? <LoadingState /> : data ? (
           <div className={loading ? "page-content refreshing" : "page-content"}>
             {nav === "overview" ? <Overview data={data} scanning={scanning} onScan={() => void scan()} /> : null}
-            {nav === "activity" ? <Activity items={data.activity} /> : null}
+            {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
             {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} /> : null}
             {nav === "settings" ? <Settings data={data} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} /> : null}
           </div>

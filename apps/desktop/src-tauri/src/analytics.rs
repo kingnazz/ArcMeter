@@ -288,7 +288,7 @@ fn activity(
                 u.input_tokens, u.cached_input_tokens, u.output_tokens, u.reasoning_tokens,
                 u.measurement_kind, u.device_id, d.friendly_name
          FROM usage_events u JOIN devices d ON d.id = u.device_id
-         WHERE u.occurred_at >= ?1 ORDER BY u.occurred_at DESC LIMIT ?2 OFFSET ?3",
+         WHERE u.occurred_at >= ?1 ORDER BY u.occurred_at DESC, u.id DESC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = statement.query_map(params![start.to_rfc3339(), limit, offset], |row| {
         let date: String = row.get(3)?;
