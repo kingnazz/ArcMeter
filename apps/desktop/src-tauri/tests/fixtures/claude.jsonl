@@ -1,0 +1,5 @@
+{"type":"assistant","sessionId":"claude-session-1","uuid":"claude-event-1","cwd":"/Users/fixture/ArcMeter","timestamp":"2026-08-20T12:00:00Z","message":{"id":"message-1","model":"claude-fixture","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":30,"output_tokens":5}}}
+{"type":"future_record"}
+not-json
+{"type":"assistant","sessionId":"claude-session-1","uuid":"claude-event-1","cwd":"/Users/fixture/ArcMeter","timestamp":"2026-08-20T12:00:00Z","message":{"id":"message-1","model":"claude-fixture","usage":{"input_tokens":10,"cache_read_input_tokens":30,"output_tokens":5}}}
+{"type":"assistant","uuid":"missing-session","timestamp":"2026-08-20T12:00:01Z","message":{"model":"claude-fixture","usage":{"input_tokens":1,"output_tokens":1}}}

@@ -1,0 +1,5 @@
+{"sessionId":"gemini-session-1","messageId":"gemini-message-1","timestamp":"2026-08-20T12:00:00Z","model":"gemini-fixture","project":"/Users/fixture/ArcMeter","usageMetadata":{"promptTokenCount":30,"cachedContentTokenCount":10,"candidatesTokenCount":8,"thoughtsTokenCount":3,"totalTokenCount":38}}
+{"type":"future_record"}
+not-json
+{"sessionId":"gemini-session-1","messageId":"gemini-message-1","timestamp":"2026-08-20T12:00:00Z","usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":8,"totalTokenCount":38}}
+{"messageId":"missing-session","timestamp":"2026-08-20T12:00:01Z","usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}
