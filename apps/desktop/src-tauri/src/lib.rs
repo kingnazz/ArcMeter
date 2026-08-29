@@ -76,10 +76,7 @@ pub fn run() {
             activity_tracking::start_browser_bridge(database.clone(), device.id.clone());
             let activity_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                loop {
-                    let Some(state) = activity_handle.try_state::<AppState>() else {
-                        break;
-                    };
+                while let Some(state) = activity_handle.try_state::<AppState>() {
                     let database = state.database.clone();
                     let device_id = state.device_id.clone();
                     if let Ok(Ok(inserted)) = tauri::async_runtime::spawn_blocking(move || {
