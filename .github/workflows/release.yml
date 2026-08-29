@@ -21,8 +21,16 @@ jobs:
         include:
           - platform: windows-2025
             bundles: nsis
+            targetArgs: ""
+            rustTargets: ""
           - platform: macos-15
             bundles: app,dmg
+            targetArgs: --target aarch64-apple-darwin
+            rustTargets: aarch64-apple-darwin
+          - platform: macos-15
+            bundles: app,dmg
+            targetArgs: --target x86_64-apple-darwin
+            rustTargets: x86_64-apple-darwin
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +42,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTargets }}
       - run: pnpm install --frozen-lockfile
       - name: Require a matching release tag
         if: startsWith(github.ref, 'refs/tags/')
@@ -74,4 +84,4 @@ jobs:
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
-          args: --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }}
+          args: --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }} ${{ matrix.targetArgs }}
