@@ -57,6 +57,12 @@ Create a Windows installer with:
 pnpm tauri build
 ```
 
+Microsoft's MSVC toolchain is the recommended Windows release path. If a GNU fallback toolchain is required, pass the target explicitly so Tauri recognizes the GNU bundle and installs `WebView2Loader.dll` beside the application:
+
+```powershell
+pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis
+```
+
 The renderer has a browser-safe empty state for visual development, but it never supplies fake production analytics. Real data is available through Tauri commands only.
 
 ## Supabase setup
