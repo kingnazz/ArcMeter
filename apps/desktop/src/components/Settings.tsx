@@ -6,6 +6,7 @@ import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, Sub
 import { formatRelativeTime, formatTokens, providerLabel } from "../lib/format";
 import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
+import { UpdateSettingRow } from "./AppUpdater";
 
 interface SettingsProps {
   data: DashboardSnapshot;
@@ -177,11 +178,7 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
           </div>
           <SettingToggle icon={<RefreshCw />} title="Launch at login" detail="Start ArcMeter quietly after you sign in to this computer." checked={autostart} onChange={(value) => void toggleAutostart(value)} />
           <SettingToggle icon={<HardDrive />} title="Keep running in tray" detail="Closing the dashboard keeps local collection active." checked={closeToTray} onChange={(value) => void toggleCloseToTray(value)} />
-          <div className="setting-row">
-            <span className="setting-row-icon"><ShieldCheck /></span>
-            <div><strong>Updates</strong><p>Manual installers are used for private V1 testing. Signed updater infrastructure is reserved for release setup.</p></div>
-            <button type="button" className="secondary-button" disabled>Check for updates</button>
-          </div>
+          <UpdateSettingRow currentVersion={data.device.appVersion} />
         </div>
       </section>
     </div>

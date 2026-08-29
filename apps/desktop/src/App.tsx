@@ -7,6 +7,7 @@ import { Insights } from "./components/Insights";
 import { Overview } from "./components/Overview";
 import { RangeSelector } from "./components/RangeSelector";
 import { Settings } from "./components/Settings";
+import { AppUpdaterProvider, UpdateBanner } from "./components/AppUpdater";
 import { getActivityPage, getDashboard, renameDevice, saveSubscription, scanNow, syncCloudNow } from "./lib/api";
 import { formatRelativeTime } from "./lib/format";
 import type { DashboardSnapshot, NavKey, RangeKey, Subscription } from "./types";
@@ -122,6 +123,7 @@ export default function App() {
   const title = navigation.find((item) => item.key === nav)?.label ?? "ArcMeter";
 
   return (
+    <AppUpdaterProvider os={data?.device.os ?? null}>
     <div className="app-shell">
       <header className="app-header">
         <button type="button" className="brand" onClick={() => setNav("overview")} aria-label="Open Overview">
@@ -151,6 +153,7 @@ export default function App() {
           {nav !== "settings" ? <RangeSelector value={range} onChange={(value) => void changeRange(value)} /> : data ? <span className="updated-label">Updated {formatRelativeTime(data.generatedAt)}</span> : null}
         </div>
 
+        {nav !== "settings" ? <UpdateBanner onOpenSettings={() => setNav("settings")} /> : null}
         {error ? <div className="error-banner" role="alert"><WifiOff /><div><strong>ArcMeter is still available offline</strong><span>{error}</span></div><button type="button" onClick={() => void load()}>Retry</button></div> : null}
 
         {loading && !data ? <LoadingState /> : data ? (
@@ -163,6 +166,7 @@ export default function App() {
         ) : null}
       </main>
     </div>
+    </AppUpdaterProvider>
   );
 }
 
