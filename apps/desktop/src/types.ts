@@ -6,6 +6,7 @@ export interface HeadlineMetrics {
   measuredTokensMonth: number;
   measuredTokensRange: number;
   measuredEventsRange: number;
+  activityMinutesRange: number;
   monthlySubscriptionUsdCents: number;
   estimatedApiValueUsdMicros: number | null;
   pricingComplete: boolean;
@@ -127,4 +128,12 @@ export interface SyncReport {
   downloadedDevices: number;
   syncedSubscriptions: number;
   completedAt: string;
+}
+
+export interface ActivityTrackingStatus {
+  claudeDesktopSupported: boolean;
+  claudeDesktopEnabled: boolean;
+  browserBridgeEnabled: boolean;
+  browserBridgePort: number;
+  pairingToken: string;
 }

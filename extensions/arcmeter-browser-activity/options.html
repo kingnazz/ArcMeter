@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ArcMeter Activity Bridge</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">ArcMeter</p>
+      <h1>Activity Bridge</h1>
+      <p>Paste the pairing token shown under ArcMeter → Settings → Activity tracking. It stays in this browser profile and is sent only to ArcMeter at <code>127.0.0.1</code>.</p>
+      <label for="token">Pairing token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false">
+      <div class="actions">
+        <button id="save" type="button">Save and test</button>
+        <span id="status" role="status"></span>
+      </div>
+      <section>
+        <strong>What is collected</strong>
+        <p>One activity-only event per UTC minute when a focused browser tab is on grok.com. ArcMeter never receives the page URL, title, prompt, response, or token count.</p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

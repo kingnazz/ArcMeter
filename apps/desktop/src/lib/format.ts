@@ -17,6 +17,20 @@ export function formatTokenDetail(value: number): string {
   return new Intl.NumberFormat("en-US").format(Math.max(0, value));
 }
 
+export function formatMinutes(value: number): string {
+  const minutes = Math.max(0, Math.round(value));
+  if (minutes < 60) return `${minutes.toLocaleString()} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder === 0 ? `${hours.toLocaleString()} hr` : `${hours.toLocaleString()} hr ${remainder} min`;
+}
+
+export function activitySourceLabel(source: string, provider: string): string {
+  if (source === "claude_desktop") return "Claude Desktop";
+  if (source === "grok_web") return "Grok web";
+  return providerLabel(provider);
+}
+
 export function formatUsdCents(value: number): string {
   return currency.format(value / 100);
 }

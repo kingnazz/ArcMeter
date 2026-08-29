@@ -100,6 +100,17 @@ pub async fn set_setting(
 }
 
 #[tauri::command]
+pub async fn activity_tracking_status(
+    state: State<'_, AppState>,
+) -> Result<crate::activity_tracking::ActivityTrackingStatus, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::activity_tracking::status(&database))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn auth_status() -> AuthStatus {
     auth::status()
 }

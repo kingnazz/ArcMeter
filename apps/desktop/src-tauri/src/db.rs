@@ -367,7 +367,13 @@ impl Database {
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        const ALLOWED: &[&str] = &["close_to_tray", "theme", "sync_enabled"];
+        const ALLOWED: &[&str] = &[
+            "close_to_tray",
+            "theme",
+            "sync_enabled",
+            "activity_claude_desktop_enabled",
+            "activity_browser_bridge_enabled",
+        ];
         if !ALLOWED.contains(&key) {
             return Err(DatabaseError::Invalid("Unsupported setting".into()));
         }
@@ -377,6 +383,23 @@ impl Database {
             params![key, value, Utc::now().to_rfc3339()],
         )?;
         Ok(())
+    }
+
+    pub fn ensure_private_setting(
+        &self,
+        key: &str,
+        generate: impl FnOnce() -> String,
+    ) -> Result<String> {
+        if let Some(value) = self.setting(key)? {
+            return Ok(value);
+        }
+        let value = generate();
+        self.connect()?.execute(
+            "INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES(?1, ?2, ?3)",
+            params![key, value, Utc::now().to_rfc3339()],
+        )?;
+        self.setting(key)?
+            .ok_or_else(|| DatabaseError::Invalid("Private setting was not created".into()))
     }
 }
 

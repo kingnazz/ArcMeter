@@ -47,6 +47,16 @@ In **Settings → AI sources**, run **Scan now** and inspect every collector. Th
 
 `Not detected` means the standard root or supported JSON/JSONL telemetry is absent. A warning means a source exists but at least one record did not match the V1 parser. A permission error is distinct and should name the affected collector without exposing a full source path. ArcMeter only needs read access to these local telemetry directories; do not grant broader macOS permissions unless the collector reports an actual denial.
 
+## Validate optional activity tracking
+
+Claude Desktop and the consumer Grok web app do not expose authoritative local token counts. ArcMeter records their opt-in activity separately and never adds it to measured-token or API-equivalent-value totals.
+
+1. In **Settings → Activity tracking**, enable **Claude Desktop active minutes**.
+2. Bring Claude Desktop to the foreground for at least one minute, return to ArcMeter, and confirm an `activity only` row appears with `1 min` and zero tokens. ArcMeter reads the frontmost app bundle identifier, not window titles or conversation content.
+3. To track grok.com, enable **Grok web active minutes** and load `extensions/arcmeter-browser-activity` as an unpacked extension in a Chrome-compatible browser.
+4. Paste ArcMeter's pairing token into the extension Options page and choose **Save and test**.
+5. Keep a grok.com tab focused for a minute, then confirm a `Grok web` activity-only row appears. The extension checks the domain locally and does not send the URL, title, prompt, response, or token count.
+
 ## Build and verify the unsigned artifacts
 
 Create the private-test build with:
@@ -81,4 +91,4 @@ The private-test build may have only a linker-generated ad-hoc signature. Do not
 4. Quiesce supported CLI writers before the idempotency pass. The Settings **Sync now** action performs a local scan before cloud sync, so an active CLI can legitimately add events between snapshots. The tray **Sync Now** action invokes cloud sync directly and is preferable when validating a live CLI session.
 5. Use **Sync now** a second time. Confirm it uploads and downloads zero usage events, that the row count still equals the distinct event-ID and natural-key counts, and that the combined event count and token total are unchanged.
 
-Only after this checklist passes should release signing and notarization be configured for distribution beyond private testing.
+For activity-only rows, also confirm the active-minute count remains unchanged after the second sync. Only after this checklist passes should release signing and notarization be configured for distribution beyond private testing.

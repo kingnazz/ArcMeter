@@ -120,6 +120,39 @@ impl UsageEvent {
             created_at: Utc::now(),
         }
     }
+
+    pub fn activity(
+        provider: impl Into<String>,
+        source: impl Into<String>,
+        source_type: SourceType,
+        minute_epoch: i64,
+        device_id: impl Into<String>,
+    ) -> Option<Self> {
+        let provider = provider.into();
+        let source = source.into();
+        let device_id = device_id.into();
+        let occurred_at = DateTime::from_timestamp(minute_epoch.checked_mul(60)?, 0)?;
+        let native_session_id = format!("{source}:{device_id}");
+        let native_event_id = format!("minute:{minute_epoch}");
+        let id = deterministic_event_id(&provider, &native_session_id, &native_event_id);
+        Some(Self {
+            id,
+            provider,
+            source,
+            source_type,
+            native_session_id,
+            native_event_id,
+            occurred_at,
+            model: None,
+            project_name: None,
+            tokens: TokenCounts::default(),
+            estimated_api_value_usd_micros: None,
+            pricing_status: "unavailable".into(),
+            measurement_kind: MeasurementKind::ActivityOnly,
+            device_id,
+            created_at: Utc::now(),
+        })
+    }
 }
 
 pub fn deterministic_event_id(provider: &str, session_id: &str, native_event_id: &str) -> String {
@@ -220,5 +253,29 @@ mod tests {
         }
         .normalize();
         assert_eq!(derived.total_tokens, 12);
+    }
+
+    #[test]
+    fn activity_is_a_deterministic_zero_token_minute() {
+        let first = UsageEvent::activity(
+            "grok",
+            "grok_web",
+            SourceType::Browser,
+            29_800_000,
+            "device-1",
+        )
+        .unwrap();
+        let second = UsageEvent::activity(
+            "grok",
+            "grok_web",
+            SourceType::Browser,
+            29_800_000,
+            "device-1",
+        )
+        .unwrap();
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.tokens, TokenCounts::default());
+        assert_eq!(first.measurement_kind, MeasurementKind::ActivityOnly);
+        assert_eq!(first.source_type, SourceType::Browser);
     }
 }

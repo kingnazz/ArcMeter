@@ -2,7 +2,7 @@
 
 ArcMeter is a local-first desktop application that measures AI coding-tool usage across a user's computers. It reads authoritative local telemetry from supported CLIs, normalizes token metadata into SQLite, and can synchronize that metadata through a user-owned Supabase account. Prompts, responses, source code, commands, uploaded files, secrets, environment variables, and absolute paths are outside the sync boundary.
 
-V1 supports native collectors for OpenAI Codex, Claude Code, Grok Build, and Gemini CLI. The product UI contains only Overview, Activity, Insights, and Settings.
+V1 supports native token collectors for OpenAI Codex, Claude Code, Grok Build, and Gemini CLI. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product UI contains only Overview, Activity, Insights, and Settings.
 
 ## Stack
 
@@ -30,6 +30,7 @@ supabase/
   migrations/                 Cloud schema, triggers, indexes, and RLS
   tests/                      Account-isolation verification SQL
 docs/                         Operational and platform notes
+extensions/                   Optional privacy-safe browser activity bridge
 .github/workflows/            Cross-platform validation
 ```
 
@@ -90,6 +91,15 @@ Codex V1 uses the observed native JSONL structure:
 The fallback fingerprint is SHA-256 over the smallest reliable identity tuple. A collision is handled as the same event and logged through collector diagnostics; no totals are incremented.
 
 Collection runs immediately at startup and every 60 seconds while ArcMeter remains in the tray. Cloud sync runs independently in the background, uses paginated metadata pulls and batched uploads, and advances its cursor to the pre-request watermark so concurrent remote writes cannot be skipped.
+
+### Optional app and web activity
+
+Claude Desktop and the consumer Grok web app do not expose authoritative local token counts, so ArcMeter never estimates tokens for them. Their opt-in collectors create one deterministic `activity_only` event per sampled UTC minute:
+
+- On macOS, Claude Desktop is counted only while its bundle is frontmost. ArcMeter reads the bundle identifier, not a window title or conversation.
+- For grok.com, load `extensions/arcmeter-browser-activity` as an unpacked Chrome-compatible extension and pair it with the token in **Settings → Activity tracking**. The extension checks the active domain locally and sends only `grok_web` plus the current minute to ArcMeter over `127.0.0.1`.
+
+Repeated samples in the same minute resolve to the same deterministic event ID. Activity-only rows sync through the existing authenticated, owner-scoped usage ledger but never contribute to measured tokens or API-equivalent value.
 
 ## Privacy guarantee
 

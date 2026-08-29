@@ -1,7 +1,7 @@
 import { ChevronDown, Filter, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ActivityItem } from "../types";
-import { formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, providerLabel } from "../lib/format";
+import { activitySourceLabel, formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, providerLabel } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 
 interface ActivityProps {
@@ -63,24 +63,26 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
           <div className="timeline">
             {groups.map(([date, rows]) => (
               <section className="timeline-day" key={date}>
-                <div className="timeline-date"><span>{date}</span><small>{formatTokens(rows.reduce((sum, item) => sum + item.totalTokens, 0))} measured</small></div>
+                <div className="timeline-date"><span>{date}</span><small>{daySummary(rows)}</small></div>
                 <div className="timeline-rows">
                   {rows.map((item) => (
                     <div className={`activity-row ${expanded === item.id ? "expanded" : ""}`} key={item.id}>
                       <button type="button" className="activity-main" onClick={() => setExpanded(expanded === item.id ? null : item.id)} aria-expanded={expanded === item.id}>
                         <time>{formatActivityTime(item.occurredAt)}</time>
                         <ProviderMark provider={item.provider} />
-                        <div className="activity-identity"><strong>{providerLabel(item.provider)}</strong><span>{item.projectName ?? "Unknown project"}</span></div>
-                        <div className="activity-model"><span>{item.model ?? "Model unavailable"}</span><small>{item.deviceName}</small></div>
-                        <div className="activity-tokens"><strong>{formatTokens(item.totalTokens)}</strong><span>{item.measurementKind.replace("_", " ")}</span></div>
+                        <div className="activity-identity"><strong>{activitySourceLabel(item.source, item.provider)}</strong><span>{item.measurementKind === "activity_only" ? "Foreground activity" : item.projectName ?? "Unknown project"}</span></div>
+                        <div className="activity-model"><span>{item.measurementKind === "activity_only" ? "Token telemetry unavailable" : item.model ?? "Model unavailable"}</span><small>{item.deviceName}</small></div>
+                        <div className="activity-tokens"><strong>{item.measurementKind === "activity_only" ? "1 min" : formatTokens(item.totalTokens)}</strong><span>{item.measurementKind.replace("_", " ")}</span></div>
                         <ChevronDown className="activity-chevron" />
                       </button>
                       {expanded === item.id ? (
                         <div className="token-detail">
-                          <TokenPart label="Input" value={item.inputTokens} />
-                          <TokenPart label="Cached input" value={item.cachedInputTokens} />
-                          <TokenPart label="Output" value={item.outputTokens} />
-                          <TokenPart label="Reasoning" value={item.reasoningTokens} />
+                          {item.measurementKind === "activity_only" ? <div className="activity-only-detail"><span>Privacy-safe signal</span><strong>One foreground minute; no URL, title, prompt, response, or token count stored.</strong></div> : <>
+                            <TokenPart label="Input" value={item.inputTokens} />
+                            <TokenPart label="Cached input" value={item.cachedInputTokens} />
+                            <TokenPart label="Output" value={item.outputTokens} />
+                            <TokenPart label="Reasoning" value={item.reasoningTokens} />
+                          </>}
                           <div className="identity-note">Deterministic event <code>{item.id.slice(0, 12)}</code></div>
                         </div>
                       ) : null}
@@ -131,4 +133,12 @@ function groupByDate(items: ActivityItem[]): [string, ActivityItem[]][] {
     groups.set(key, group);
   }
   return [...groups];
+}
+
+function daySummary(items: ActivityItem[]): string {
+  const measured = items.reduce((sum, item) => sum + item.totalTokens, 0);
+  const minutes = items.filter((item) => item.measurementKind === "activity_only").length;
+  if (measured > 0 && minutes > 0) return `${formatTokens(measured)} measured · ${minutes} active min`;
+  if (minutes > 0) return `${minutes} active min`;
+  return `${formatTokens(measured)} measured`;
 }

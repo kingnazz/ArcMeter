@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { AuthStatus, DashboardSnapshot, Device, RangeKey, ScanReport, Subscription, SyncReport } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, RangeKey, ScanReport, Subscription, SyncReport } from "../types";
 
 const previewNow = new Date().toISOString();
 const unavailableDevice: Device = {
@@ -23,6 +23,7 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
       measuredTokensMonth: 0,
       measuredTokensRange: 0,
       measuredEventsRange: 0,
+      activityMinutesRange: 0,
       monthlySubscriptionUsdCents: 0,
       estimatedApiValueUsdMicros: null,
       pricingComplete: false,
@@ -87,6 +88,17 @@ export async function getSetting(key: string): Promise<string | null> {
 export async function setSetting(key: string, value: string): Promise<void> {
   if (!isTauri()) return;
   return invoke("set_setting", { key, value });
+}
+
+export async function getActivityTrackingStatus(): Promise<ActivityTrackingStatus> {
+  if (!isTauri()) return {
+    claudeDesktopSupported: false,
+    claudeDesktopEnabled: false,
+    browserBridgeEnabled: false,
+    browserBridgePort: 47_639,
+    pairingToken: "",
+  };
+  return invoke<ActivityTrackingStatus>("activity_tracking_status");
 }
 
 export async function getAuthStatus(): Promise<AuthStatus> {

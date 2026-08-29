@@ -30,6 +30,7 @@ pub struct HeadlineMetrics {
     pub measured_tokens_month: i64,
     pub measured_tokens_range: i64,
     pub measured_events_range: i64,
+    pub activity_minutes_range: i64,
     pub monthly_subscription_usd_cents: i64,
     pub estimated_api_value_usd_micros: Option<i64>,
     pub pricing_complete: bool,
@@ -96,6 +97,11 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         [start.to_rfc3339()],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
     )?;
+    let activity_minutes_range: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only' AND occurred_at >= ?1",
+        [start.to_rfc3339()],
+        |row| row.get(0),
+    )?;
     let subscriptions = database.subscriptions()?;
     let monthly_subscription_usd_cents = subscriptions
         .iter()
@@ -118,6 +124,7 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
             measured_tokens_month,
             measured_tokens_range,
             measured_events_range,
+            activity_minutes_range,
             monthly_subscription_usd_cents,
             estimated_api_value_usd_micros,
             pricing_complete,
@@ -438,7 +445,7 @@ fn provider_label(provider: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{TokenCounts, UsageEvent};
+    use crate::domain::{SourceType, TokenCounts, UsageEvent};
 
     #[test]
     fn dashboard_aggregates_measured_value_subscription_and_device() {
@@ -501,5 +508,29 @@ mod tests {
         let elapsed = now.signed_duration_since(start);
         assert!(elapsed >= Duration::days(6));
         assert!(elapsed < Duration::days(7));
+    }
+
+    #[test]
+    fn activity_minutes_never_inflate_measured_tokens_or_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("activity-analytics.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        database.ensure_default_subscriptions().unwrap();
+        let minute = Utc::now().timestamp().div_euclid(60);
+        let event = UsageEvent::activity(
+            "claude",
+            "claude_desktop",
+            SourceType::Manual,
+            minute,
+            device.id,
+        )
+        .unwrap();
+        database.insert_usage_events(&[event]).unwrap();
+
+        let snapshot = dashboard(&database, "today", &ScanReport::default()).unwrap();
+        assert_eq!(snapshot.metrics.activity_minutes_range, 1);
+        assert_eq!(snapshot.metrics.measured_events_range, 0);
+        assert_eq!(snapshot.metrics.measured_tokens_range, 0);
+        assert_eq!(snapshot.metrics.estimated_api_value_usd_micros, None);
     }
 }

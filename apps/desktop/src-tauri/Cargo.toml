@@ -32,5 +32,8 @@ tokio = { version = "=1.49.0", features = ["rt-multi-thread", "sync", "time", "m
 tracing = "=0.1.44"
 uuid = { version = "=1.21.0", features = ["v4", "serde"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSWorkspace", "NSRunningApplication"] }
+
 [dev-dependencies]
 tempfile = "=3.26.0"

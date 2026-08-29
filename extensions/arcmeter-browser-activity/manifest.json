@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ArcMeter Activity Bridge",
+  "version": "0.1.0",
+  "description": "Reports privacy-safe active minutes for supported AI web apps to ArcMeter on this computer.",
+  "permissions": ["alarms", "storage"],
+  "host_permissions": [
+    "https://grok.com/*",
+    "https://*.grok.com/*",
+    "http://127.0.0.1:47639/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "options_page": "options.html"
+}

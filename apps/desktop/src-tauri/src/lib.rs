@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(dead_code))]
 
+mod activity_tracking;
 mod analytics;
 mod auth;
 mod collectors;
@@ -61,6 +62,7 @@ pub fn run() {
             let database = Database::open(app_data.join("arcmeter.db"))?;
             let device = database.ensure_device(app.package_info().version.to_string().as_str())?;
             database.ensure_default_subscriptions()?;
+            let _ = activity_tracking::ensure_bridge_token(&database)?;
 
             app.manage(AppState {
                 database: database.clone(),
@@ -70,6 +72,27 @@ pub fn run() {
             });
 
             build_tray(app)?;
+
+            activity_tracking::start_browser_bridge(database.clone(), device.id.clone());
+            let activity_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let Some(state) = activity_handle.try_state::<AppState>() else {
+                        break;
+                    };
+                    let database = state.database.clone();
+                    let device_id = state.device_id.clone();
+                    if let Ok(Ok(inserted)) = tauri::async_runtime::spawn_blocking(move || {
+                        activity_tracking::record_claude_minute_if_active(&database, &device_id)
+                    })
+                    .await
+                        && inserted
+                    {
+                        let _ = activity_handle.emit("arcmeter://data-changed", ());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                }
+            });
 
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -139,6 +162,7 @@ pub fn run() {
             commands::rename_device,
             commands::get_setting,
             commands::set_setting,
+            commands::activity_tracking_status,
             commands::auth_status,
             commands::auth_sign_in,
             commands::auth_sign_out,

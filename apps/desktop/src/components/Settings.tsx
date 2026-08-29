@@ -1,10 +1,10 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { isTauri } from "@tauri-apps/api/core";
-import { Check, CloudOff, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Activity as ActivityIcon, Check, CloudOff, Copy, Globe2, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AuthStatus, DashboardSnapshot, Device, Subscription } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, Subscription } from "../types";
 import { formatRelativeTime, formatTokens, providerLabel } from "../lib/format";
-import { getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
+import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
 
 interface SettingsProps {
@@ -24,12 +24,14 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
   const [message, setMessage] = useState<string | null>(null);
   const [auth, setAuth] = useState<AuthStatus>({ configured: false, signedIn: false, email: null, expiresAt: null });
   const [syncing, setSyncing] = useState(false);
+  const [activityStatus, setActivityStatus] = useState<ActivityTrackingStatus | null>(null);
 
   useEffect(() => {
     if (!isTauri()) return;
     void isEnabled().then(setAutostart).catch(() => setAutostart(false));
     void getSetting("close_to_tray").then((value) => setCloseToTray(value !== "false"));
     void getAuthStatus().then(setAuth);
+    void getActivityTrackingStatus().then(setActivityStatus);
   }, []);
 
   async function saveDeviceName() {
@@ -67,6 +69,18 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
     } finally {
       setSyncing(false);
     }
+  }
+
+  async function toggleActivity(key: "activity_claude_desktop_enabled" | "activity_browser_bridge_enabled", next: boolean) {
+    await setSetting(key, String(next));
+    setActivityStatus(await getActivityTrackingStatus());
+    setMessage(next ? "Activity tracking enabled" : "Activity tracking disabled");
+  }
+
+  async function copyPairingToken() {
+    if (!activityStatus?.pairingToken) return;
+    await navigator.clipboard.writeText(activityStatus.pairingToken);
+    setMessage("Browser pairing token copied");
   }
 
   return (
@@ -111,6 +125,38 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
               {source.diagnostics[0] ? <p className="source-diagnostic"><TriangleAlert />{source.diagnostics[0].message}</p> : null}
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <SettingsHeading title="Activity tracking" description="Optional foreground-time signals for apps that do not expose trustworthy token telemetry." />
+        <div className="settings-panel toggles-panel">
+          <SettingToggle
+            icon={<ActivityIcon />}
+            title="Claude Desktop active minutes"
+            detail={activityStatus?.claudeDesktopSupported ? "Counts a minute only while Claude Desktop is the frontmost macOS app. No window titles or conversation content are read." : "Available in the macOS build. Enable it there to count foreground Claude Desktop minutes."}
+            checked={activityStatus?.claudeDesktopEnabled ?? false}
+            disabled={!activityStatus?.claudeDesktopSupported}
+            onChange={(value) => void toggleActivity("activity_claude_desktop_enabled", value)}
+          />
+          <SettingToggle
+            icon={<Globe2 />}
+            title="Grok web active minutes"
+            detail="Accepts one-minute grok.com active-tab signals from the ArcMeter browser extension over this computer's loopback address."
+            checked={activityStatus?.browserBridgeEnabled ?? false}
+            onChange={(value) => void toggleActivity("activity_browser_bridge_enabled", value)}
+          />
+          {activityStatus?.browserBridgeEnabled ? (
+            <div className="setting-row bridge-pairing-row">
+              <span className="setting-row-icon"><ShieldCheck /></span>
+              <div>
+                <strong>Browser extension pairing</strong>
+                <p>Load <code>extensions/arcmeter-browser-activity</code> as an unpacked Chrome-compatible extension, then paste this local-only token into its Options page. Bridge port: {activityStatus.browserBridgePort}.</p>
+                <div className="pairing-token"><input aria-label="Browser pairing token" readOnly value={activityStatus.pairingToken} /><button type="button" className="icon-button" aria-label="Copy browser pairing token" onClick={() => void copyPairingToken()}><Copy /></button></div>
+              </div>
+            </div>
+          ) : null}
+          <div className="activity-privacy-note"><ShieldCheck /> Activity-only events contain a source, device, and UTC minute. They never claim token usage or API cost.</div>
         </div>
       </section>
 
@@ -211,12 +257,12 @@ function SubscriptionRow({ subscription, onSave }: { subscription: Subscription;
   );
 }
 
-function SettingToggle({ icon, title, detail, checked, onChange }: { icon: React.ReactNode; title: string; detail: string; checked: boolean; onChange: (value: boolean) => void }) {
+function SettingToggle({ icon, title, detail, checked, disabled = false, onChange }: { icon: React.ReactNode; title: string; detail: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
   return (
     <div className="setting-row">
       <span className="setting-row-icon">{icon}</span>
       <div><strong>{title}</strong><p>{detail}</p></div>
-      <label className="switch-label compact"><span className="sr-only">{title}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /></label>
+      <label className="switch-label compact"><span className="sr-only">{title}</span><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /><i /></label>
     </div>
   );
 }

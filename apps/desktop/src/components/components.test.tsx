@@ -16,6 +16,7 @@ function snapshot(): DashboardSnapshot {
       measuredTokensMonth: 0,
       measuredTokensRange: 0,
       measuredEventsRange: 0,
+      activityMinutesRange: 0,
       monthlySubscriptionUsdCents: 0,
       estimatedApiValueUsdMicros: null,
       pricingComplete: false,
@@ -123,6 +124,32 @@ describe("important product states", () => {
     expect(screen.queryByText(/prompt content/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Load older activity" }));
     expect(onLoadMore).toHaveBeenCalledOnce();
+  });
+
+  it("labels activity-only minutes without inventing token telemetry", () => {
+    render(
+      <Activity items={[{
+        id: "b".repeat(64),
+        provider: "grok",
+        source: "grok_web",
+        occurredAt: now,
+        model: null,
+        projectName: null,
+        totalTokens: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        measurementKind: "activity_only",
+        deviceId: "device-1",
+        deviceName: "Mac",
+      }]} />,
+    );
+    expect(screen.getByText("Grok web")).toBeInTheDocument();
+    expect(screen.getByText("Token telemetry unavailable")).toBeInTheDocument();
+    expect(screen.getByText("1 min")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText(/no URL, title, prompt, response, or token count stored/i)).toBeInTheDocument();
   });
 
   it("surfaces collector diagnostics without revealing a filesystem path", () => {

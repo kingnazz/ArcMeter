@@ -1,6 +1,6 @@
 import { ArrowUpRight, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
 import type { BreakdownItem, DashboardSnapshot, SourceScanResult, TrendPoint } from "../types";
-import { formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
+import { formatMinutes, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 
 interface OverviewProps {
@@ -9,7 +9,7 @@ interface OverviewProps {
   onScan: () => void;
 }
 export function Overview({ data, scanning, onScan }: OverviewProps) {
-  if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0) {
+  if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
     return <Onboarding sources={data.sources} scanning={scanning} onScan={onScan} />;
   }
 
@@ -25,6 +25,7 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
         <div className="metric-divider" />
         <Metric label="Today" value={formatTokens(metrics.measuredTokensToday)} suffix="measured" />
         <Metric label="This month" value={formatTokens(metrics.measuredTokensMonth)} suffix="measured" />
+        <Metric label="Active time" value={formatMinutes(metrics.activityMinutesRange)} suffix="activity-only" />
         <Metric label="Subscriptions" value={formatUsdCents(metrics.monthlySubscriptionUsdCents)} suffix="monthly" />
       </section>
 
