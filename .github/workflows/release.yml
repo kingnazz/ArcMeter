@@ -2,9 +2,6 @@ name: Release ArcMeter
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: write
@@ -45,12 +42,6 @@ jobs:
         with:
           targets: ${{ matrix.rustTargets }}
       - run: pnpm install --frozen-lockfile
-      - name: Require a matching release tag
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag $env:GITHUB_REF_NAME does not match ArcMeter v$version" }
       - name: Require release credentials
         shell: pwsh
         env:

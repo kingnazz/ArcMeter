@@ -37,7 +37,7 @@ Apple and Windows platform-signing secrets can be added when those certificates 
 
 1. Update the version consistently in the root and desktop `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
 2. Merge a fully green CI revision.
-3. Run **Release ArcMeter** in GitHub Actions, or push the matching `vX.Y.Z` tag.
+3. Run **Release ArcMeter** manually in GitHub Actions. The workflow creates the version tag and private draft; publishing the draft must not trigger a second build.
 4. The workflow merges `src-tauri/tauri.release.conf.json`, builds Windows x64 NSIS plus macOS Apple-silicon and Intel app/DMG bundles, creates updater archives and `.sig` files, and writes `latest.json`.
 5. Test both installers from the draft release on clean systems.
 6. Publish the draft. Only then does GitHub's `releases/latest` endpoint expose the update to installed apps.
