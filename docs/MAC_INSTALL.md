@@ -57,31 +57,49 @@ Claude Desktop and the consumer Grok web app do not expose authoritative local t
 4. Paste ArcMeter's pairing token into the extension Options page and choose **Save and test**.
 5. Keep a grok.com tab focused for a minute, then confirm a `Grok web` activity-only row appears. The extension checks the domain locally and does not send the URL, title, prompt, response, or token count.
 
-## Build and verify the unsigned artifacts
+## Build and verify the personal-use artifacts
 
 Create the private-test build with:
 
 ```sh
-pnpm tauri build
+pnpm tauri build --target aarch64-apple-darwin --bundles dmg
+pnpm tauri build --target x86_64-apple-darwin --bundles dmg
 ```
 
 The default outputs are:
 
-- `apps/desktop/src-tauri/target/release/bundle/macos/ArcMeter.app`
-- `apps/desktop/src-tauri/target/release/bundle/dmg/ArcMeter_<version>_<arch>.dmg`
+- `apps/desktop/src-tauri/target/<target>/release/bundle/macos/ArcMeter.app`
+- `apps/desktop/src-tauri/target/<target>/release/bundle/dmg/ArcMeter_<version>_<arch>.dmg`
 
-Record a SHA-256 for the DMG and the app executable. For a reproducible app-bundle content digest, hash the sorted file-hash manifest:
+ArcMeter's macOS bundles use a complete ad-hoc signature for personal use. They are not signed with an Apple Developer ID and are not notarized by Apple. Ad-hoc signing seals the app resources but does not establish a trusted publisher identity, so a normally configured Mac will still require Gatekeeper approval on first launch.
+
+Verify the SHA-256 supplied by the builder before opening a trusted artifact, then verify the app inside the final DMG. Choose the expected architecture for the artifact being checked:
 
 ```sh
-shasum -a 256 apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
-shasum -a 256 apps/desktop/src-tauri/target/release/bundle/macos/ArcMeter.app/Contents/MacOS/arcmeter
-find apps/desktop/src-tauri/target/release/bundle/macos/ArcMeter.app -type f -print0 \
-  | LC_ALL=C sort -z \
-  | xargs -0 shasum -a 256 \
-  | shasum -a 256
+shasum -a 256 apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+shasum -a 256 apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+scripts/verify-macos-dmg.sh path/to/ArcMeter_<version>_aarch64.dmg arm64
+scripts/verify-macos-dmg.sh path/to/ArcMeter_<version>_x64.dmg x86_64
 ```
 
-The private-test build may have only a linker-generated ad-hoc signature. Do not configure a Developer ID certificate, hardened runtime, notarization, or updater signing until the unsigned build and two-device sync tests pass.
+The verifier runs `hdiutil verify`, mounts the DMG read-only, requires `codesign --verify --deep --strict --verbose=4` to pass on its `ArcMeter.app`, checks the enclosed executable with `file` and `lipo`, and prints the DMG SHA-256. A linker-generated signature on only the executable is insufficient.
+
+Tauri updater signing is independent of Apple bundle signing. `TAURI_SIGNING_PRIVATE_KEY` signs updater metadata and must not be presented as an Apple signing identity.
+
+## First launch of a trusted build
+
+After comparing the DMG SHA-256 with the value supplied by the builder, drag ArcMeter to **Applications**. Because the app has no Developer ID signature or Apple notarization, open it using one of Apple's per-app approval paths:
+
+1. In Finder, Control-click or right-click **ArcMeter.app**, choose **Open**, then confirm **Open**.
+2. If macOS blocks the first attempt, open **System Settings → Privacy & Security**, find the ArcMeter notice, choose **Open Anyway**, and confirm.
+
+Do not disable Gatekeeper system-wide. If both approval paths are unavailable, and only after independently verifying that this exact artifact is trusted, remove quarantine from ArcMeter alone as a fallback:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ArcMeter.app
+```
+
+Removing quarantine is only a local launch workaround; it neither repairs nor replaces the build-time resource seal.
 
 ## Validate the Windows-to-Mac sync
 
@@ -91,4 +109,4 @@ The private-test build may have only a linker-generated ad-hoc signature. Do not
 4. Quiesce supported CLI writers before the idempotency pass. The Settings **Sync now** action performs a local scan before cloud sync, so an active CLI can legitimately add events between snapshots. The tray **Sync Now** action invokes cloud sync directly and is preferable when validating a live CLI session.
 5. Use **Sync now** a second time. Confirm it uploads and downloads zero usage events, that the row count still equals the distinct event-ID and natural-key counts, and that the combined event count and token total are unchanged.
 
-For activity-only rows, also confirm the active-minute count remains unchanged after the second sync. Only after this checklist passes should release signing and notarization be configured for distribution beyond private testing.
+For activity-only rows, also confirm the active-minute count remains unchanged after the second sync. The self-built/personal-use distribution strategy intentionally stops at complete ad-hoc bundle signing. Developer ID signing and Apple notarization are not configured.

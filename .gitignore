@@ -12,6 +12,7 @@ coverage/
 playwright-report/
 test-results/
 artifacts/
+.arcmeter-tests/
 *.tsbuildinfo
 *.db
 *.db-shm

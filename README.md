@@ -34,7 +34,7 @@ extensions/                   Optional privacy-safe browser activity bridge
 .github/workflows/            Cross-platform validation
 ```
 
-The more detailed component and data flow is in [ARCHITECTURE.md](ARCHITECTURE.md). The trust boundary and threat model are in [SECURITY.md](SECURITY.md). Pricing provenance is recorded in [docs/PRICING.md](docs/PRICING.md), the signed release process is in [docs/UPDATES.md](docs/UPDATES.md), and the Phase 1 evidence is in [docs/VERIFICATION.md](docs/VERIFICATION.md).
+The more detailed component and data flow is in [ARCHITECTURE.md](ARCHITECTURE.md). The trust boundary and threat model are in [SECURITY.md](SECURITY.md). Pricing provenance is recorded in [docs/PRICING.md](docs/PRICING.md), the signed updater release process is in [docs/UPDATES.md](docs/UPDATES.md), and the Phase 1 evidence is in [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
 ## Development
 
@@ -58,13 +58,22 @@ Create a Windows installer with:
 pnpm tauri build
 ```
 
-This ordinary local build creates a manual installer. Production releases use `src-tauri/tauri.release.conf.json`, the private updater-signing key supplied through GitHub Actions, and the draft-first workflow in `.github/workflows/release.yml` to create signed update artifacts and `latest.json`.
+This ordinary local build creates a manual installer. Production releases use `src-tauri/tauri.release.conf.json`, the private updater-signing key supplied through GitHub Actions, and the draft-first workflow in `.github/workflows/release.yml` to create updater-signed artifacts and `latest.json`. Updater signing is independent of operating-system code signing.
 
 Microsoft's MSVC toolchain is the recommended Windows release path. If a GNU fallback toolchain is required, pass the target explicitly so Tauri recognizes the GNU bundle and installs `WebView2Loader.dll` beside the application:
 
 ```powershell
 pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis
 ```
+
+Create personal-use macOS installers for both supported architectures with:
+
+```sh
+pnpm tauri build --target aarch64-apple-darwin --bundles dmg
+pnpm tauri build --target x86_64-apple-darwin --bundles dmg
+```
+
+The macOS app bundles are completely sealed with an ad-hoc signature. They are not Apple Developer ID signed or notarized, and Gatekeeper approval is expected on first launch. Verify the final DMG and its enclosed app with `scripts/verify-macos-dmg.sh`; see [docs/MAC_INSTALL.md](docs/MAC_INSTALL.md) for checksums and safe first-launch steps.
 
 The renderer has a browser-safe empty state for visual development, but it never supplies fake production analytics. Real data is available through Tauri commands only.
 

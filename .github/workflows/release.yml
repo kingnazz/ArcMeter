@@ -20,14 +20,20 @@ jobs:
             bundles: nsis
             targetArgs: ""
             rustTargets: ""
+            macArch: ""
+            appleSigningIdentity: ""
           - platform: macos-15
             bundles: app,dmg
             targetArgs: --target aarch64-apple-darwin
             rustTargets: aarch64-apple-darwin
+            macArch: arm64
+            appleSigningIdentity: "-"
           - platform: macos-15
             bundles: app,dmg
             targetArgs: --target x86_64-apple-darwin
             rustTargets: x86_64-apple-darwin
+            macArch: x86_64
+            appleSigningIdentity: "-"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -59,8 +65,10 @@ jobs:
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri updater signing is separate from Apple bundle code signing.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.appleSigningIdentity }}
           ARCMETER_SUPABASE_URL: ${{ secrets.ARCMETER_SUPABASE_URL }}
           ARCMETER_SUPABASE_ANON_KEY: ${{ secrets.ARCMETER_SUPABASE_ANON_KEY }}
         with:
@@ -68,7 +76,7 @@ jobs:
           tauriScript: pnpm tauri
           tagName: v__VERSION__
           releaseName: ArcMeter v__VERSION__
-          releaseBody: Signed Windows and macOS installers plus the ArcMeter in-app update manifest.
+          releaseBody: Windows installer and ad-hoc signed personal-use macOS installers, plus the signed ArcMeter updater manifest. The macOS apps are not Apple Developer ID signed or notarized.
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
@@ -76,3 +84,14 @@ jobs:
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
           args: --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }} ${{ matrix.targetArgs }}
+      - name: Verify final macOS DMG bundle signature and architecture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dmgs=(apps/desktop/src-tauri/target/${{ matrix.rustTargets }}/release/bundle/dmg/*.dmg)
+          if (( ${#dmgs[@]} != 1 )); then
+            echo "expected exactly one DMG, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          scripts/verify-macos-dmg.sh "${dmgs[0]}" "${{ matrix.macArch }}"
