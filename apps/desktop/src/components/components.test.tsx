@@ -22,7 +22,6 @@ function snapshot(): DashboardSnapshot {
       monthlySubscriptionUsdCents: 0,
       estimatedApiValueUsdMicros: null,
       pricingComplete: false,
-      valueMultiple: null,
     },
     trend: [],
     byProvider: [],
@@ -91,7 +90,7 @@ describe("important product states", () => {
     data.metrics.measuredTokensRange = 125_000;
     render(<Overview data={data} scanning={false} onScan={vi.fn()} />);
     expect(screen.getByText("No measured events have safe model pricing")).toBeInTheDocument();
-    expect(screen.getByText("Minimum value captured").nextElementSibling).toHaveTextContent("—");
+    expect(screen.getByText("Pricing coverage").nextElementSibling).toHaveTextContent("0%");
   });
 
   it("shows a safe priced subtotal and coverage when only part of the usage can be priced", () => {
@@ -102,12 +101,14 @@ describe("important product states", () => {
     data.metrics.measuredTokensRange = 1_000_000;
     data.metrics.pricedTokensRange = 920_000;
     data.metrics.estimatedApiValueUsdMicros = 18_420_000;
-    data.metrics.valueMultiple = 0.921;
     const view = render(<Overview data={data} scanning={false} onScan={vi.fn()} />);
     const result = within(view.container);
     expect(result.getByText("$18+")).toBeInTheDocument();
     expect(result.getByText("Partial estimate · 92% of measured tokens priced")).toBeInTheDocument();
-    expect(result.getByText("Minimum value captured").nextElementSibling).toHaveTextContent("≥0.9×");
+    expect(result.getByText("Pricing coverage").nextElementSibling).toHaveTextContent("92%");
+    expect(result.getByText("$37+")).toBeInTheDocument();
+    fireEvent.change(result.getByLabelText("Scenario multiplier"), { target: { value: "5" } });
+    expect(result.getByText("$92+")).toBeInTheDocument();
   });
 
   it("renders measured activity and exposes token parts without conversation content", () => {

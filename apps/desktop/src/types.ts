@@ -12,7 +12,6 @@ export interface HeadlineMetrics {
   monthlySubscriptionUsdCents: number;
   estimatedApiValueUsdMicros: number | null;
   pricingComplete: boolean;
-  valueMultiple: number | null;
 }
 
 export interface TrendPoint {

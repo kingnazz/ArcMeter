@@ -36,7 +36,6 @@ pub struct HeadlineMetrics {
     pub monthly_subscription_usd_cents: i64,
     pub estimated_api_value_usd_micros: Option<i64>,
     pub pricing_complete: bool,
-    pub value_multiple: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,10 +113,6 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
     let pricing_complete =
         measured_events_range > 0 && priced_events_range == measured_events_range;
     let estimated_api_value_usd_micros = (priced_events_range > 0).then_some(value_micros);
-    let value_multiple = estimated_api_value_usd_micros.and_then(|value| {
-        (monthly_subscription_usd_cents > 0)
-            .then_some(value as f64 / (monthly_subscription_usd_cents as f64 * 10_000.0))
-    });
     let total = measured_tokens_range.max(1);
 
     Ok(DashboardSnapshot {
@@ -134,7 +129,6 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
             monthly_subscription_usd_cents,
             estimated_api_value_usd_micros,
             pricing_complete,
-            value_multiple,
         },
         trend: trend(&connection, start)?,
         by_provider: breakdown(&connection, "provider", start, total)?,
@@ -494,7 +488,6 @@ mod tests {
             Some(11_000_000)
         );
         assert!(snapshot.metrics.pricing_complete);
-        assert_eq!(snapshot.metrics.value_multiple, Some(0.55));
         assert_eq!(snapshot.by_provider[0].key, "codex");
         assert_eq!(snapshot.by_project[0].label, "ArcMeter");
         assert_eq!(snapshot.by_device[0].key, device.id);
@@ -567,7 +560,6 @@ mod tests {
             Some(11_000_000)
         );
         assert!(!snapshot.metrics.pricing_complete);
-        assert_eq!(snapshot.metrics.value_multiple, Some(0.55));
     }
 
     #[test]

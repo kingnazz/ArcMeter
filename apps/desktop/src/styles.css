@@ -92,6 +92,12 @@ main { width: min(1480px, 100%); margin: 0 auto; padding: 30px 38px 64px; }
 .value-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid rgba(182, 243, 107, 0.24); border-radius: 9px; color: var(--accent); background: rgba(182, 243, 107, 0.08); }.value-icon svg { width: 17px; }
 .value-strip > div:nth-child(2) { display: flex; flex-direction: column; gap: 4px; }.value-strip > div:nth-child(2) strong { font-size: 21px; font-weight: 610; letter-spacing: -.03em; }
 .value-context { color: var(--text-dim); font-size: 11px; }.value-multiple { display: flex; align-items: baseline; gap: 14px; padding-left: 22px; border-left: 1px solid rgba(182,243,107,.15); }.value-multiple span { color: var(--text-muted); font-size: 11px; }.value-multiple strong { min-width: 56px; color: var(--accent); font-size: 24px; letter-spacing: -.04em; }
+.value-calculator { display: grid; grid-template-columns: minmax(250px,1fr) minmax(180px,.55fr) minmax(260px,.85fr); align-items: center; gap: 24px; }
+.calculator-heading { display: flex; align-items: center; gap: 13px; }.calculator-heading h2 { font-size: 13px; }.calculator-heading p { margin-top: 5px; color: var(--text-dim); font-size: 10px; line-height: 1.45; }
+.calculator-icon { flex: 0 0 auto; display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 9px; color: var(--accent); background: var(--surface-2); }.calculator-icon svg { width: 16px; }
+.calculator-result { display: flex; flex-direction: column; gap: 3px; }.calculator-result span, .calculator-control > span { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }.calculator-result strong { color: var(--accent); font-size: 24px; letter-spacing: -.04em; }.calculator-result small { color: var(--text-dim); font-size: 9px; }
+.calculator-control { display: flex; flex-direction: column; gap: 9px; }.calculator-control > div { display: flex; align-items: center; gap: 12px; }.calculator-control input { width: 100%; accent-color: var(--accent); }.calculator-control output { min-width: 38px; color: var(--text); font-size: 12px; font-weight: 650; text-align: right; }
+.calculator-note { grid-column: 1/-1; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 9px; line-height: 1.55; }
 
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(310px, .75fr); gap: 18px; }.overview-grid-bottom { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .panel { min-width: 0; padding: 21px 22px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-1); }
@@ -156,6 +162,7 @@ main { width: min(1480px, 100%); margin: 0 auto; padding: 30px 38px 64px; }
 @media (max-width: 920px) {
   .app-header { grid-template-columns: 160px 1fr 42px; }.app-header nav button { padding-inline: 9px; }.app-header nav button svg { display: none; }.sync-control { width: 36px; }.sync-control > span { display: none; }
   .hero-metrics { grid-template-columns: repeat(3,1fr); }.hero-primary { grid-column: 1/-1; }.metric-divider { display: none; }.overview-grid { grid-template-columns: 1fr; }.overview-grid-bottom { grid-template-columns: 1fr; }.overview-grid-bottom .panel:last-child { grid-column: auto; }
+  .value-calculator { grid-template-columns: 1fr 1fr; }.calculator-heading { grid-column: 1/-1; }
   .filter-bar { flex-wrap: wrap; }.search-field { flex-basis: 100%; }.timeline-day { grid-template-columns: 1fr; gap: 8px; }.timeline-date { display: flex; justify-content: space-between; padding: 0 2px; }.activity-main { grid-template-columns: 54px 34px minmax(130px,1fr) minmax(145px,1fr) 80px 15px; }
   .insight-grid { grid-template-columns: 1fr; }.source-settings-grid { grid-template-columns: 1fr; }.device-panel { grid-template-columns: 42px 1fr auto; }.connection-state { grid-column: 2/-1; padding: 10px 0 0; border-top: 1px solid var(--border); border-left: 0; }.subscription-row { grid-template-columns: 8px 1fr 150px 85px 34px; }.subscription-name { grid-template-columns: 1fr; gap: 4px; }
 }

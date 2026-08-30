@@ -312,4 +312,44 @@ mod tests {
         assert_eq!(rule.min_input_tokens, 272_001);
         assert_eq!(rule.input_usd_micros_per_million, 8_000_000);
     }
+
+    #[test]
+    fn seeded_pricing_uses_the_rate_effective_when_usage_occurred() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("historical-pricing.db")).unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+
+        let gpt_55 = find_rule(
+            &connection,
+            "codex",
+            "gpt-5.5-2026-04-23",
+            "2026-05-01T00:00:00Z",
+            100_000,
+        )
+        .unwrap()
+        .expect("a GPT-5.5 launch-era rule");
+        assert_eq!(gpt_55.input_usd_micros_per_million, 5_000_000);
+        assert_eq!(gpt_55.output_usd_micros_per_million, 30_000_000);
+
+        let pre_promo = find_rule(
+            &connection,
+            "codex",
+            "gpt-5.6-sol",
+            "2026-08-20T00:00:00Z",
+            100_000,
+        )
+        .unwrap()
+        .expect("a pre-promotion GPT-5.6 Sol rule");
+        let promotional = find_rule(
+            &connection,
+            "codex",
+            "gpt-5.6-sol",
+            "2026-08-28T00:00:00Z",
+            100_000,
+        )
+        .unwrap()
+        .expect("a promotional GPT-5.6 Sol rule");
+        assert_eq!(pre_promo.input_usd_micros_per_million, 5_000_000);
+        assert_eq!(promotional.input_usd_micros_per_million, 4_000_000);
+    }
 }

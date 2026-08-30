@@ -1,4 +1,5 @@
-import { ArrowUpRight, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
 import type { BreakdownItem, DashboardSnapshot, SourceScanResult, TrendPoint } from "../types";
 import { formatMinutes, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
@@ -9,12 +10,14 @@ interface OverviewProps {
   onScan: () => void;
 }
 export function Overview({ data, scanning, onScan }: OverviewProps) {
+  const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
     return <Onboarding sources={data.sources} scanning={scanning} onScan={onScan} />;
   }
 
   const metrics = data.metrics;
   const hasPricedValue = metrics.estimatedApiValueUsdMicros !== null;
+  const pricedValueMicros = metrics.estimatedApiValueUsdMicros ?? 0;
   const pricingCoverage = metrics.measuredTokensRange > 0
     ? metrics.pricedTokensRange / metrics.measuredTokensRange
     : metrics.measuredEventsRange > 0
@@ -22,7 +25,7 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
       : 0;
   const pricingCoveragePercent = Math.min(100, Math.max(0, Math.round(pricingCoverage * 100)));
   const valueLabel = hasPricedValue
-    ? `${formatUsdMicros(metrics.estimatedApiValueUsdMicros)}${metrics.pricingComplete ? "" : "+"}`
+    ? `${formatUsdMicros(pricedValueMicros)}${metrics.pricingComplete ? "" : "+"}`
     : "Unavailable";
   const valueContext = metrics.pricingComplete
     ? "Based on versioned model pricing"
@@ -47,16 +50,47 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
       <section className="value-strip">
         <div className="value-icon"><CircleDollarSign /></div>
         <div>
-          <span className="eyebrow">Estimated API-equivalent value</span>
+          <span className="eyebrow">Historical public API list value</span>
           <strong>{valueLabel}</strong>
         </div>
         <div className="value-context">
           {valueContext}
         </div>
         <div className="value-multiple">
-          <span>{metrics.pricingComplete ? "Value captured" : "Minimum value captured"}</span>
-          <strong>{metrics.valueMultiple === null ? "—" : `${metrics.pricingComplete ? "" : "≥"}${metrics.valueMultiple.toFixed(1)}×`}</strong>
+          <span>Pricing coverage</span>
+          <strong>{pricingCoveragePercent}%</strong>
         </div>
+      </section>
+
+      <section className="panel value-calculator" aria-labelledby="value-calculator-title">
+        <div className="calculator-heading">
+          <div className="calculator-icon"><Calculator /></div>
+          <div>
+            <h2 id="value-calculator-title">Unsubsidized price scenario</h2>
+            <p>Explore a hypothetical markup over the verified public API list value.</p>
+          </div>
+        </div>
+        <div className="calculator-result">
+          <span>Scenario value</span>
+          <strong>{hasPricedValue ? `${formatUsdMicros(Math.round(pricedValueMicros * scenarioMultiplier))}${metrics.pricingComplete ? "" : "+"}` : "Unavailable"}</strong>
+          <small>{hasPricedValue ? `${formatUsdMicros(pricedValueMicros)} × ${scenarioMultiplier.toFixed(1)}` : "No priceable usage in this period"}</small>
+        </div>
+        <label className="calculator-control">
+          <span>Scenario multiplier</span>
+          <div>
+            <input
+              aria-label="Scenario multiplier"
+              type="range"
+              min="1"
+              max="10"
+              step="0.5"
+              value={scenarioMultiplier}
+              onChange={(event) => setScenarioMultiplier(Number(event.target.value))}
+            />
+            <output>{scenarioMultiplier.toFixed(1)}×</output>
+          </div>
+        </label>
+        <p className="calculator-note">Public API list price is the closest verifiable MSRP. Providers do not publish a definitive “unsubsidized” consumer price, so values above 1× are scenarios—not claims about provider costs.</p>
       </section>
 
       <div className="overview-grid">

@@ -12,6 +12,8 @@ The initial `0.2.0` installation is the bootstrap release: an older build withou
 
 Version `0.2.1` is the first updater-delivered maintenance release. It keeps safely priced API-equivalent value visible as a lower-bound subtotal when the selected period also contains events whose model pricing cannot be verified.
 
+Version `0.2.2` adds historical public API list pricing for the models found in the first year of ArcMeter telemetry and a clearly labeled 1×–10× unsubsidized-price scenario calculator. Existing local events are repriced once after the database migration; deterministic event IDs and sync idempotency are unchanged.
+
 ## Signing identity
 
 The updater public key is committed in `apps/desktop/src-tauri/tauri.conf.json`. Its matching private key must never be committed. The Windows setup machine currently keeps it at:

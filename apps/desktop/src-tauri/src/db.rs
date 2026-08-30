@@ -8,6 +8,8 @@ use std::time::Duration;
 use thiserror::Error;
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const HISTORICAL_PRICING_MIGRATION: &str =
+    include_str!("../migrations/0002_historical_pricing.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -87,6 +89,17 @@ impl Database {
             transaction.pragma_update(None, "user_version", 1)?;
             transaction.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, ?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
+        if current < 2 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(HISTORICAL_PRICING_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 2)?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?1)",
                 [Utc::now().to_rfc3339()],
             )?;
             transaction.commit()?;
