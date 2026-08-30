@@ -30,6 +30,8 @@ pub struct HeadlineMetrics {
     pub measured_tokens_month: i64,
     pub measured_tokens_range: i64,
     pub measured_events_range: i64,
+    pub priced_tokens_range: i64,
+    pub priced_events_range: i64,
     pub activity_minutes_range: i64,
     pub monthly_subscription_usd_cents: i64,
     pub estimated_api_value_usd_micros: Option<i64>,
@@ -90,12 +92,13 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
     let month_start = local_month_start(now);
     let measured_tokens_today = sum_tokens(&connection, today_start)?;
     let measured_tokens_month = sum_tokens(&connection, month_start)?;
-    let (measured_events_range, measured_tokens_range, value_micros, missing_prices) = connection.query_row(
+    let (measured_events_range, measured_tokens_range, value_micros, priced_events_range, priced_tokens_range) = connection.query_row(
         "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_api_value_usd_micros), 0),
-                COALESCE(SUM(CASE WHEN pricing_status != 'available' THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN total_tokens ELSE 0 END), 0)
          FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1",
         [start.to_rfc3339()],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
     )?;
     let activity_minutes_range: i64 = connection.query_row(
         "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only' AND occurred_at >= ?1",
@@ -108,8 +111,9 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         .filter(|subscription| subscription.active)
         .map(|subscription| subscription.monthly_price_usd_cents)
         .sum::<i64>();
-    let pricing_complete = measured_events_range > 0 && missing_prices == 0;
-    let estimated_api_value_usd_micros = pricing_complete.then_some(value_micros);
+    let pricing_complete =
+        measured_events_range > 0 && priced_events_range == measured_events_range;
+    let estimated_api_value_usd_micros = (priced_events_range > 0).then_some(value_micros);
     let value_multiple = estimated_api_value_usd_micros.and_then(|value| {
         (monthly_subscription_usd_cents > 0)
             .then_some(value as f64 / (monthly_subscription_usd_cents as f64 * 10_000.0))
@@ -124,6 +128,8 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
             measured_tokens_month,
             measured_tokens_range,
             measured_events_range,
+            priced_tokens_range,
+            priced_events_range,
             activity_minutes_range,
             monthly_subscription_usd_cents,
             estimated_api_value_usd_micros,
@@ -480,6 +486,8 @@ mod tests {
 
         let snapshot = dashboard(&database, "month", &ScanReport::default()).unwrap();
         assert_eq!(snapshot.metrics.measured_tokens_range, 1_100_000);
+        assert_eq!(snapshot.metrics.priced_tokens_range, 1_100_000);
+        assert_eq!(snapshot.metrics.priced_events_range, 1);
         assert_eq!(snapshot.metrics.monthly_subscription_usd_cents, 2_000);
         assert_eq!(
             snapshot.metrics.estimated_api_value_usd_micros,
@@ -496,6 +504,70 @@ mod tests {
                 .iter()
                 .any(|item| item.id == "provider-share")
         );
+    }
+
+    #[test]
+    fn dashboard_keeps_safe_priced_subtotal_when_other_events_are_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("partial-pricing.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        database.ensure_default_subscriptions().unwrap();
+        let mut subscription = database.subscriptions().unwrap().remove(0);
+        subscription.active = true;
+        subscription.monthly_price_usd_cents = 2_000;
+        subscription.updated_at = Utc::now();
+        database.save_subscription(&subscription).unwrap();
+
+        let priced = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "priced-session",
+            "priced-turn",
+            Utc::now(),
+            Some("gpt-5.6-sol".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 1_000_000,
+                cached_input_tokens: 0,
+                output_tokens: 100_000,
+                reasoning_tokens: 20_000,
+                total_tokens: 1_100_000,
+            },
+            device.id.clone(),
+        );
+        let unavailable = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "review-session",
+            "review-turn",
+            Utc::now(),
+            Some("codex-auto-review".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100_000,
+                cached_input_tokens: 0,
+                output_tokens: 10_000,
+                reasoning_tokens: 2_000,
+                total_tokens: 110_000,
+            },
+            device.id,
+        );
+        database
+            .insert_usage_events(&[priced, unavailable])
+            .unwrap();
+        assert_eq!(crate::pricing::reprice_events(&database).unwrap(), 1);
+
+        let snapshot = dashboard(&database, "month", &ScanReport::default()).unwrap();
+        assert_eq!(snapshot.metrics.measured_events_range, 2);
+        assert_eq!(snapshot.metrics.priced_events_range, 1);
+        assert_eq!(snapshot.metrics.measured_tokens_range, 1_210_000);
+        assert_eq!(snapshot.metrics.priced_tokens_range, 1_100_000);
+        assert_eq!(
+            snapshot.metrics.estimated_api_value_usd_micros,
+            Some(11_000_000)
+        );
+        assert!(!snapshot.metrics.pricing_complete);
+        assert_eq!(snapshot.metrics.value_multiple, Some(0.55));
     }
 
     #[test]
@@ -530,7 +602,9 @@ mod tests {
         let snapshot = dashboard(&database, "today", &ScanReport::default()).unwrap();
         assert_eq!(snapshot.metrics.activity_minutes_range, 1);
         assert_eq!(snapshot.metrics.measured_events_range, 0);
+        assert_eq!(snapshot.metrics.priced_events_range, 0);
         assert_eq!(snapshot.metrics.measured_tokens_range, 0);
+        assert_eq!(snapshot.metrics.priced_tokens_range, 0);
         assert_eq!(snapshot.metrics.estimated_api_value_usd_micros, None);
     }
 }

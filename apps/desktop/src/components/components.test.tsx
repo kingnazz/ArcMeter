@@ -16,6 +16,8 @@ function snapshot(): DashboardSnapshot {
       measuredTokensMonth: 0,
       measuredTokensRange: 0,
       measuredEventsRange: 0,
+      pricedTokensRange: 0,
+      pricedEventsRange: 0,
       activityMinutesRange: 0,
       monthlySubscriptionUsdCents: 0,
       estimatedApiValueUsdMicros: null,
@@ -82,14 +84,30 @@ describe("important product states", () => {
     expect(screen.getByText("Not detected")).toBeInTheDocument();
   });
 
-  it("marks API-equivalent value unavailable when any model lacks exact pricing", () => {
+  it("marks API-equivalent value unavailable when no measured model has safe pricing", () => {
     const data = snapshot();
     data.metrics.measuredEventsRange = 1;
     data.metrics.measuredTokensMonth = 125_000;
     data.metrics.measuredTokensRange = 125_000;
     render(<Overview data={data} scanning={false} onScan={vi.fn()} />);
-    expect(screen.getByText("Pricing unavailable for one or more measured models")).toBeInTheDocument();
-    expect(screen.getByText("Value captured").nextElementSibling).toHaveTextContent("—");
+    expect(screen.getByText("No measured events have safe model pricing")).toBeInTheDocument();
+    expect(screen.getByText("Minimum value captured").nextElementSibling).toHaveTextContent("—");
+  });
+
+  it("shows a safe priced subtotal and coverage when only part of the usage can be priced", () => {
+    const data = snapshot();
+    data.metrics.measuredEventsRange = 10;
+    data.metrics.pricedEventsRange = 8;
+    data.metrics.measuredTokensMonth = 1_000_000;
+    data.metrics.measuredTokensRange = 1_000_000;
+    data.metrics.pricedTokensRange = 920_000;
+    data.metrics.estimatedApiValueUsdMicros = 18_420_000;
+    data.metrics.valueMultiple = 0.921;
+    const view = render(<Overview data={data} scanning={false} onScan={vi.fn()} />);
+    const result = within(view.container);
+    expect(result.getByText("$18+")).toBeInTheDocument();
+    expect(result.getByText("Partial estimate · 92% of measured tokens priced")).toBeInTheDocument();
+    expect(result.getByText("Minimum value captured").nextElementSibling).toHaveTextContent("≥0.9×");
   });
 
   it("renders measured activity and exposes token parts without conversation content", () => {

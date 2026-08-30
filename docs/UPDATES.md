@@ -10,6 +10,8 @@ https://github.com/kingnazz/ArcMeter/releases/latest/download/latest.json
 
 The initial `0.2.0` installation is the bootstrap release: an older build without the updater still needs one manual installer update. After `0.2.0` is installed, later versions can arrive through the in-app flow.
 
+Version `0.2.1` is the first updater-delivered maintenance release. It keeps safely priced API-equivalent value visible as a lower-bound subtotal when the selected period also contains events whose model pricing cannot be verified.
+
 ## Signing identity
 
 The updater public key is committed in `apps/desktop/src-tauri/tauri.conf.json`. Its matching private key must never be committed. The Windows setup machine currently keeps it at:

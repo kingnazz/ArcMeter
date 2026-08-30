@@ -14,6 +14,21 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
   }
 
   const metrics = data.metrics;
+  const hasPricedValue = metrics.estimatedApiValueUsdMicros !== null;
+  const pricingCoverage = metrics.measuredTokensRange > 0
+    ? metrics.pricedTokensRange / metrics.measuredTokensRange
+    : metrics.measuredEventsRange > 0
+      ? metrics.pricedEventsRange / metrics.measuredEventsRange
+      : 0;
+  const pricingCoveragePercent = Math.min(100, Math.max(0, Math.round(pricingCoverage * 100)));
+  const valueLabel = hasPricedValue
+    ? `${formatUsdMicros(metrics.estimatedApiValueUsdMicros)}${metrics.pricingComplete ? "" : "+"}`
+    : "Unavailable";
+  const valueContext = metrics.pricingComplete
+    ? "Based on versioned model pricing"
+    : hasPricedValue
+      ? `Partial estimate · ${pricingCoveragePercent}% of measured tokens priced`
+      : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
       <section className="hero-metrics" aria-label="Headline usage metrics">
@@ -33,14 +48,14 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
         <div className="value-icon"><CircleDollarSign /></div>
         <div>
           <span className="eyebrow">Estimated API-equivalent value</span>
-          <strong>{formatUsdMicros(metrics.estimatedApiValueUsdMicros)}</strong>
+          <strong>{valueLabel}</strong>
         </div>
         <div className="value-context">
-          {metrics.pricingComplete ? "Based on versioned model pricing" : "Pricing unavailable for one or more measured models"}
+          {valueContext}
         </div>
         <div className="value-multiple">
-          <span>Value captured</span>
-          <strong>{metrics.valueMultiple === null ? "—" : `${metrics.valueMultiple.toFixed(1)}×`}</strong>
+          <span>{metrics.pricingComplete ? "Value captured" : "Minimum value captured"}</span>
+          <strong>{metrics.valueMultiple === null ? "—" : `${metrics.pricingComplete ? "" : "≥"}${metrics.valueMultiple.toFixed(1)}×`}</strong>
         </div>
       </section>
 

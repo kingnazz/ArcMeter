@@ -6,6 +6,8 @@ export interface HeadlineMetrics {
   measuredTokensMonth: number;
   measuredTokensRange: number;
   measuredEventsRange: number;
+  pricedTokensRange: number;
+  pricedEventsRange: number;
   activityMinutesRange: number;
   monthlySubscriptionUsdCents: number;
   estimatedApiValueUsdMicros: number | null;
