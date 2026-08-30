@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { DashboardSnapshot } from "../types";
 import { Activity } from "./Activity";
@@ -46,7 +46,7 @@ function snapshot(): DashboardSnapshot {
       },
       {
         provider: "claude",
-        label: "Claude Code",
+        label: "Claude Code CLI",
         detected: false,
         filesSeen: 0,
         recordsSeen: 0,
@@ -179,5 +179,12 @@ describe("important product states", () => {
     expect(screen.getByText("ArcMeter could not read a Codex session file")).toBeInTheDocument();
     expect(screen.getByText("Cloud account not configured")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("C:\\Users");
+    expect(screen.getAllByText("Claude Code CLI").length).toBeGreaterThan(0);
+    expect(screen.getByText(/CLI telemetry only/)).toBeInTheDocument();
+    const desktopCard = screen.getByText("Claude Desktop").closest("article");
+    expect(desktopCard).not.toBeNull();
+    expect(within(desktopCard!).getByText("Foreground activity only · no token telemetry")).toBeInTheDocument();
+    expect(within(desktopCard!).getByText("0 min")).toBeInTheDocument();
+    expect(within(desktopCard!).getByText("Unavailable")).toBeInTheDocument();
   });
 });

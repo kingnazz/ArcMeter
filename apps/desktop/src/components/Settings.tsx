@@ -3,7 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { Activity as ActivityIcon, Check, CloudOff, Copy, Globe2, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, Subscription } from "../types";
-import { formatRelativeTime, formatTokens, providerLabel } from "../lib/format";
+import { formatMinutes, formatRelativeTime, formatTokens, providerLabel } from "../lib/format";
 import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
 import { UpdateSettingRow } from "./AppUpdater";
@@ -32,8 +32,12 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
     void isEnabled().then(setAutostart).catch(() => setAutostart(false));
     void getSetting("close_to_tray").then((value) => setCloseToTray(value !== "false"));
     void getAuthStatus().then(setAuth);
-    void getActivityTrackingStatus().then(setActivityStatus);
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    void getActivityTrackingStatus().then(setActivityStatus);
+  }, [data.generatedAt]);
 
   async function saveDeviceName() {
     if (deviceName.trim() === data.device.friendlyName || !deviceName.trim()) return;
@@ -84,6 +88,12 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
     setMessage("Browser pairing token copied");
   }
 
+  const claudeDesktopStatusLabel = activityStatus
+    ? activityStatus.claudeDesktopSupported
+      ? activityStatus.claudeDesktopEnabled ? "Tracking" : "Off"
+      : "macOS only"
+    : data.device.os === "macos" ? "Checking" : "macOS only";
+
   return (
     <div className="settings-layout">
       {message ? <button className="toast" type="button" onClick={() => setMessage(null)}><Check />{message}</button> : null}
@@ -115,7 +125,7 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
           {data.sources.map((source) => (
             <article className="source-setting" key={source.provider}>
               <ProviderMark provider={source.provider} />
-              <div className="source-setting-title"><strong>{source.label}</strong><span>{source.detected ? "Detected" : "Not detected"}</span></div>
+              <div className="source-setting-title"><strong>{source.label}</strong><span>{source.provider === "claude" ? `${source.detected ? "Detected" : "Not detected"} · CLI telemetry only` : source.detected ? "Detected" : "Not detected"}</span></div>
               <StatusBadge status={source.detected ? source.status : "idle"} />
               <dl>
                 <div><dt>Measured events</dt><dd>{source.measuredRecords.toLocaleString()}</dd></div>
@@ -126,6 +136,17 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
               {source.diagnostics[0] ? <p className="source-diagnostic"><TriangleAlert />{source.diagnostics[0].message}</p> : null}
             </article>
           ))}
+          <article className="source-setting">
+            <ProviderMark provider="claude" />
+            <div className="source-setting-title"><strong>Claude Desktop</strong><span>Foreground activity only · no token telemetry</span></div>
+            <StatusBadge status={activityStatus?.claudeDesktopEnabled ? "healthy" : "idle"} label={claudeDesktopStatusLabel} />
+            <dl>
+              <div><dt>Recorded activity</dt><dd>{formatMinutes(activityStatus?.claudeDesktopMinutes ?? 0)}</dd></div>
+              <div><dt>Measured tokens</dt><dd>Unavailable</dd></div>
+              <div><dt>Last activity</dt><dd>{formatRelativeTime(activityStatus?.claudeDesktopLastActivityAt ?? null)}</dd></div>
+              <div><dt>History</dt><dd>Since enabled</dd></div>
+            </dl>
+          </article>
         </div>
       </section>
 
@@ -264,9 +285,9 @@ function SettingToggle({ icon, title, detail, checked, disabled = false, onChang
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const label = status === "idle" ? "Idle" : `${status[0]?.toUpperCase() ?? ""}${status.slice(1)}`;
-  return <span className={`status-badge status-badge-${status}`}><i />{label}</span>;
+function StatusBadge({ status, label }: { status: string; label?: string }) {
+  const displayLabel = label ?? (status === "idle" ? "Idle" : `${status[0]?.toUpperCase() ?? ""}${status.slice(1)}`);
+  return <span className={`status-badge status-badge-${status}`}><i />{displayLabel}</span>;
 }
 
 function ConnectionStatus({ device }: { device: Device }) {

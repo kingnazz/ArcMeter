@@ -67,7 +67,7 @@ export function formatActivityDate(value: string): string {
 export function providerLabel(provider: string): string {
   const labels: Record<string, string> = {
     codex: "Codex",
-    claude: "Claude Code",
+    claude: "Claude Code CLI",
     grok: "Grok Build",
     gemini: "Gemini CLI",
     openai: "ChatGPT Personal",

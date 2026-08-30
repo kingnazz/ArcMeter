@@ -2,7 +2,7 @@
 
 ArcMeter is a local-first desktop application that measures AI coding-tool usage across a user's computers. It reads authoritative local telemetry from supported CLIs, normalizes token metadata into SQLite, and can synchronize that metadata through a user-owned Supabase account. Prompts, responses, source code, commands, uploaded files, secrets, environment variables, and absolute paths are outside the sync boundary.
 
-V1 supports native token collectors for OpenAI Codex, Claude Code, Grok Build, and Gemini CLI. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product UI contains only Overview, Activity, Insights, and Settings.
+V1 supports native token collectors for OpenAI Codex, Claude Code CLI, Grok Build, and Gemini CLI. Claude Code CLI telemetry does not include the Claude Desktop app. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product UI contains only Overview, Activity, Insights, and Settings.
 
 ## Stack
 

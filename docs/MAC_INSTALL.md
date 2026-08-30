@@ -41,7 +41,7 @@ pnpm tauri dev
 In **Settings → AI sources**, run **Scan now** and inspect every collector. The standard macOS roots are:
 
 - Codex: `~/.codex/sessions` and `~/.codex/archived_sessions`
-- Claude Code: `~/.claude/projects`
+- Claude Code CLI: `~/.claude/projects` (does not include Claude Desktop)
 - Grok Build: `~/.grok`
 - Gemini CLI: `~/.gemini`
 

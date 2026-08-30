@@ -36,7 +36,7 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
     byDevice: [],
     activity: [],
     insights: [],
-    sources: ["Codex", "Claude Code", "Grok Build", "Gemini CLI"].map((label) => ({
+    sources: ["Codex", "Claude Code CLI", "Grok Build", "Gemini CLI"].map((label) => ({
       provider: label.split(" ")[0]?.toLowerCase() ?? label.toLowerCase(),
       label,
       detected: false,
@@ -94,6 +94,8 @@ export async function getActivityTrackingStatus(): Promise<ActivityTrackingStatu
   if (!isTauri()) return {
     claudeDesktopSupported: false,
     claudeDesktopEnabled: false,
+    claudeDesktopMinutes: 0,
+    claudeDesktopLastActivityAt: null,
     browserBridgeEnabled: false,
     browserBridgePort: 47_639,
     pairingToken: "",

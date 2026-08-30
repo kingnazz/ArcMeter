@@ -13,6 +13,6 @@ describe("formatting", () => {
   });
 
   it("uses product-facing provider names", () => {
-    expect(providerLabel("claude")).toBe("Claude Code");
+    expect(providerLabel("claude")).toBe("Claude Code CLI");
   });
 });

@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::domain::{SourceType, UsageEvent};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -17,6 +17,8 @@ const BRIDGE_TOKEN_KEY: &str = "activity_bridge_token";
 pub struct ActivityTrackingStatus {
     pub claude_desktop_supported: bool,
     pub claude_desktop_enabled: bool,
+    pub claude_desktop_minutes: i64,
+    pub claude_desktop_last_activity_at: Option<DateTime<Utc>>,
     pub browser_bridge_enabled: bool,
     pub browser_bridge_port: u16,
     pub pairing_token: String,
@@ -36,9 +38,25 @@ pub fn ensure_bridge_token(database: &Database) -> crate::db::Result<String> {
 }
 
 pub fn status(database: &Database) -> crate::db::Result<ActivityTrackingStatus> {
+    let connection = rusqlite::Connection::open(database.path())?;
+    let (claude_desktop_minutes, last_activity_at) = connection.query_row(
+        "SELECT COUNT(*), MAX(occurred_at) FROM usage_events
+         WHERE source = 'claude_desktop' AND measurement_kind = 'activity_only'",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+    )?;
+    let claude_desktop_last_activity_at = last_activity_at
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|date| date.with_timezone(&Utc))
+                .map_err(|error| crate::db::DatabaseError::Invalid(error.to_string()))
+        })
+        .transpose()?;
     Ok(ActivityTrackingStatus {
         claude_desktop_supported: cfg!(target_os = "macos"),
         claude_desktop_enabled: setting_enabled(database, "activity_claude_desktop_enabled"),
+        claude_desktop_minutes,
+        claude_desktop_last_activity_at,
         browser_bridge_enabled: setting_enabled(database, "activity_browser_bridge_enabled"),
         browser_bridge_port: BRIDGE_PORT,
         pairing_token: ensure_bridge_token(database)?,
@@ -268,5 +286,35 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn status_reports_claude_desktop_minutes_without_token_claims() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("activity.db")).unwrap();
+        database
+            .set_setting("activity_claude_desktop_enabled", "true")
+            .unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let minute = Utc::now().timestamp().div_euclid(60);
+        let event = UsageEvent::activity(
+            "claude",
+            "claude_desktop",
+            SourceType::Manual,
+            minute,
+            device.id,
+        )
+        .unwrap();
+        let expected_time = event.occurred_at;
+        assert_eq!(event.tokens.total_tokens, 0);
+        database.insert_usage_events(&[event]).unwrap();
+
+        let activity_status = status(&database).unwrap();
+        assert!(activity_status.claude_desktop_enabled);
+        assert_eq!(activity_status.claude_desktop_minutes, 1);
+        assert_eq!(
+            activity_status.claude_desktop_last_activity_at,
+            Some(expected_time)
+        );
     }
 }

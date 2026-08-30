@@ -133,6 +133,8 @@ export interface SyncReport {
 export interface ActivityTrackingStatus {
   claudeDesktopSupported: boolean;
   claudeDesktopEnabled: boolean;
+  claudeDesktopMinutes: number;
+  claudeDesktopLastActivityAt: string | null;
   browserBridgeEnabled: boolean;
   browserBridgePort: number;
   pairingToken: string;

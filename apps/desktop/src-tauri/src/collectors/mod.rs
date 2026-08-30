@@ -3,7 +3,7 @@ pub mod codex;
 pub mod gemini;
 pub mod grok;
 
-use crate::db::{CollectorState, Database};
+use crate::db::{CollectorState, Database, DatabaseError};
 use crate::domain::{CollectorDiagnostic, CollectorOutput};
 use chrono::{DateTime, Utc};
 use directories::UserDirs;
@@ -43,7 +43,7 @@ pub struct ScanReport {
 pub fn scan_all(database: &Database, device_id: &str) -> ScanReport {
     let specifications = [
         CollectorSpec::new("codex", "Codex", codex_roots(), &["jsonl"]),
-        CollectorSpec::new("claude", "Claude Code", claude_roots(), &["jsonl"]),
+        CollectorSpec::new("claude", "Claude Code CLI", claude_roots(), &["jsonl"]),
         CollectorSpec::new("grok", "Grok Build", grok_roots(), &["jsonl", "json"]),
         CollectorSpec::new("gemini", "Gemini CLI", gemini_roots(), &["jsonl", "json"]),
     ];
@@ -180,8 +180,8 @@ fn scan_provider(
         }
     }
 
-    let (measured_records, measured_tokens) =
-        provider_totals(database, specification.provider).unwrap_or_default();
+    let (measured_records, measured_tokens, persisted_last_usage_at) =
+        provider_summary(database, specification.provider).unwrap_or_default();
     let status = if diagnostics.iter().any(|item| item.severity == "error") {
         "error"
     } else if diagnostics.is_empty() {
@@ -199,7 +199,7 @@ fn scan_provider(
         measured_records,
         measured_tokens,
         last_scan_at: now,
-        last_usage_at,
+        last_usage_at: persisted_last_usage_at.or(last_usage_at),
         status: status.into(),
         diagnostics: diagnostics.into_iter().take(20).collect(),
     }
@@ -215,16 +215,36 @@ fn parse_path(provider: &str, path: &Path, device_id: &str) -> CollectorOutput {
     }
 }
 
-fn provider_totals(database: &Database, provider: &str) -> crate::db::Result<(i64, i64)> {
+fn provider_summary(
+    database: &Database,
+    provider: &str,
+) -> crate::db::Result<(i64, i64, Option<DateTime<Utc>>)> {
     let connection = rusqlite::Connection::open(database.path())?;
-    connection
+    let (records, tokens, last_usage_at) = connection
         .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0) FROM usage_events
-             WHERE provider = ?1 AND measurement_kind = 'measured'",
+            "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0),
+                    (SELECT occurred_at FROM usage_events
+                     WHERE provider = ?1 AND measurement_kind = 'measured'
+                     ORDER BY occurred_at DESC LIMIT 1)
+             FROM usage_events WHERE provider = ?1 AND measurement_kind = 'measured'",
             [provider],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
-        .map_err(Into::into)
+        .map_err(DatabaseError::from)?;
+    let last_usage_at = last_usage_at
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|date| date.with_timezone(&Utc))
+                .map_err(|error| DatabaseError::Invalid(error.to_string()))
+        })
+        .transpose()?;
+    Ok((records, tokens, last_usage_at))
 }
 
 fn discover_files(roots: &[PathBuf], extensions: &[&str]) -> Vec<PathBuf> {
@@ -387,6 +407,42 @@ pub(crate) fn value_string(value: Option<&serde_json::Value>) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_scan_keeps_persisted_last_usage() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("claude");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude.jsonl"),
+            source.join("session.jsonl"),
+        )
+        .unwrap();
+        let database = Database::open(temporary.path().join("arcmeter.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+
+        let first = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new(
+                "claude",
+                "Claude Code CLI",
+                vec![source.clone()],
+                &["jsonl"],
+            ),
+        );
+        let second = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new("claude", "Claude Code CLI", vec![source], &["jsonl"]),
+        );
+
+        assert!(first.last_usage_at.is_some());
+        assert_eq!(second.records_inserted, 0);
+        assert_eq!(second.last_usage_at, first.last_usage_at);
+        assert_eq!(second.measured_records, first.measured_records);
+        assert_eq!(second.measured_tokens, first.measured_tokens);
+    }
 
     #[test]
     #[ignore = "reads the current user's real Codex history for an explicit end-to-end validation"]

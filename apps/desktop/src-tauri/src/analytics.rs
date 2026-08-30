@@ -174,7 +174,7 @@ fn normalized_sources(scan: &ScanReport) -> Vec<SourceScanResult> {
     }
     [
         ("codex", "Codex"),
-        ("claude", "Claude Code"),
+        ("claude", "Claude Code CLI"),
         ("grok", "Grok Build"),
         ("gemini", "Gemini CLI"),
     ]
@@ -435,7 +435,7 @@ fn local_month_start(now: DateTime<Utc>) -> DateTime<Utc> {
 fn provider_label(provider: &str) -> String {
     match provider {
         "codex" => "Codex".into(),
-        "claude" => "Claude Code".into(),
+        "claude" => "Claude Code CLI".into(),
         "grok" => "Grok Build".into(),
         "gemini" => "Gemini CLI".into(),
         value => value.into(),

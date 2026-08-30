@@ -13,7 +13,7 @@ pub fn parse_file(path: &Path, device_id: &str) -> CollectorOutput {
             diagnostics: vec![diagnostic(
                 "error",
                 "source_unreadable",
-                "ArcMeter could not read a Claude Code session file",
+                "ArcMeter could not read a Claude Code CLI session file",
                 None,
             )],
             ..Default::default()
@@ -31,7 +31,7 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
             output.diagnostics.push(diagnostic(
                 "warning",
                 "line_unreadable",
-                "A Claude Code record could not be read",
+                "A Claude Code CLI record could not be read",
                 Some(record_number),
             ));
             continue;
@@ -46,7 +46,7 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
                 output.diagnostics.push(diagnostic(
                     "warning",
                     "malformed_json",
-                    "Ignored a malformed Claude Code record",
+                    "Ignored a malformed Claude Code CLI record",
                     Some(record_number),
                 ));
                 continue;
@@ -66,7 +66,7 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
             output.diagnostics.push(diagnostic(
                 "warning",
                 "missing_session_id",
-                "Ignored a Claude Code usage record without session identity",
+                "Ignored a Claude Code CLI usage record without session identity",
                 Some(record_number),
             ));
             continue;
@@ -75,7 +75,7 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
             output.diagnostics.push(diagnostic(
                 "warning",
                 "missing_timestamp",
-                "Ignored a Claude Code usage record without a valid timestamp",
+                "Ignored a Claude Code CLI usage record without a valid timestamp",
                 Some(record_number),
             ));
             continue;
