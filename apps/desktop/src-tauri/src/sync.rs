@@ -581,4 +581,108 @@ mod tests {
             (3, 2, 1, Some(120_000_000), Some(local_id))
         );
     }
+
+    #[test]
+    fn richer_claude_revision_requeues_same_id_and_pulls_as_one_cloud_row() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("origin.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let initial_time = "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut initial = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session-123",
+            "request:req-123",
+            initial_time,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("SyntheticProject".into()),
+            TokenCounts {
+                input_tokens: 100,
+                output_tokens: 20,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut initial)).unwrap();
+        let event_id = initial.id.clone();
+        let write = database.upsert_claude_request_events(&[initial]).unwrap();
+        assert_eq!((write.inserted, write.updated), (1, 0));
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                "UPDATE usage_events SET updated_at = '2026-08-29T00:00:00Z' WHERE id = ?1",
+                [&event_id],
+            )
+            .unwrap();
+        let initial_payload = pending_events(&database, 250).unwrap();
+        assert_eq!(initial_payload.len(), 1);
+        assert_eq!(initial_payload[0]["id"], event_id);
+        assert_eq!(initial_payload[0]["total_tokens"], 120);
+        mark_events_synced(&database, &[&event_id]).unwrap();
+        assert!(pending_events(&database, 250).unwrap().is_empty());
+
+        let mut richer = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session-123",
+            "request:req-123",
+            "2026-08-29T00:01:00Z".parse::<DateTime<Utc>>().unwrap(),
+            Some("claude-sonnet-5-20260801".into()),
+            Some("SyntheticProject".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 50,
+                cache_write_tokens: 20,
+                cache_write_5m_tokens: 12,
+                cache_write_1h_tokens: 8,
+                output_tokens: 40,
+                total_tokens: 210,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut richer)).unwrap();
+        assert_eq!(richer.id, event_id);
+        let write = database.upsert_claude_request_events(&[richer]).unwrap();
+        assert_eq!((write.inserted, write.updated), (0, 1));
+        let revised_payload = pending_events(&database, 250).unwrap();
+        assert_eq!(revised_payload.len(), 1);
+        assert_eq!(revised_payload[0]["id"], event_id);
+        assert_eq!(revised_payload[0]["total_tokens"], 210);
+        assert_eq!(revised_payload[0]["cache_write_5m_tokens"], 12);
+        assert!(
+            revised_payload[0]["updated_at"].as_str().unwrap()
+                > initial_payload[0]["updated_at"].as_str().unwrap()
+        );
+
+        let receiver_directory = tempfile::tempdir().unwrap();
+        let receiver = Database::open(receiver_directory.path().join("receiver.db")).unwrap();
+        receiver.ensure_device("test").unwrap();
+        let origin_device = json!({
+            "id": device.id,
+            "friendly_name": "Origin",
+            "os": "windows",
+            "architecture": "x86_64",
+            "app_version": "test",
+            "created_at": "2026-08-29T00:00:00Z",
+            "last_seen_at": "2026-08-29T00:01:00Z",
+            "last_sync_at": "2026-08-29T00:01:00Z"
+        });
+        assert_eq!(
+            apply_remote_devices(&receiver, &[origin_device]).unwrap(),
+            1
+        );
+        assert_eq!(apply_remote_events(&receiver, &initial_payload).unwrap(), 1);
+        assert_eq!(apply_remote_events(&receiver, &revised_payload).unwrap(), 1);
+        let received: (i64, i64, String) = Connection::open(receiver.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*), total_tokens, id FROM usage_events WHERE id = ?1",
+                [&event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(received, (1, 210, event_id));
+    }
 }

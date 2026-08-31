@@ -1,7 +1,10 @@
 use crate::device::{Device, clean_name};
-use crate::domain::{EventReconciliation, UsageEvent};
-use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use crate::domain::{
+    EventReconciliation, MeasurementKind, SourceType, TokenCounts, UsageEvent,
+    deterministic_event_id, is_more_authoritative_snapshot,
+};
+use chrono::{DateTime, TimeDelta, Utc};
+use rusqlite::{CachedStatement, Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,6 +17,17 @@ const GROK_COMPLETED_TURNS_MIGRATION: &str =
     include_str!("../migrations/0003_grok_completed_turns.sql");
 const CLAUDE_REQUEST_TELEMETRY_MIGRATION: &str =
     include_str!("../migrations/0004_claude_request_telemetry.sql");
+
+const INSERT_USAGE_EVENT_SQL: &str = "INSERT INTO usage_events(
+    id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
+    model, project_name, input_tokens, cached_input_tokens, cache_write_tokens,
+    cache_write_5m_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens,
+    total_tokens, estimated_api_value_usd_micros, native_cost_usd_ticks,
+    pricing_status, measurement_kind, device_id, created_at, updated_at, sync_status
+ ) VALUES(
+    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?23, 'pending'
+ ) ON CONFLICT(id) DO NOTHING";
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -56,6 +70,28 @@ pub struct CollectorState {
     pub last_usage_at: Option<DateTime<Utc>>,
     pub status: String,
     pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EventWriteSummary {
+    pub inserted: usize,
+    pub updated: usize,
+}
+
+struct StoredSnapshot {
+    provider: String,
+    source: String,
+    source_type: String,
+    native_session_id: String,
+    native_event_id: String,
+    device_id: String,
+    measurement_kind: String,
+    occurred_at: DateTime<Utc>,
+    model: Option<String>,
+    project_name: Option<String>,
+    tokens: TokenCounts,
+    updated_at: DateTime<Utc>,
+    superseded_by_event_id: Option<String>,
 }
 
 impl Database {
@@ -217,48 +253,159 @@ impl Database {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut inserted = 0;
         {
-            let mut statement = transaction.prepare_cached(
-                "INSERT INTO usage_events(
-                    id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
-                    model, project_name, input_tokens, cached_input_tokens, cache_write_tokens,
-                    cache_write_5m_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens,
-                    total_tokens, estimated_api_value_usd_micros, native_cost_usd_ticks,
-                    pricing_status, measurement_kind, device_id, created_at, updated_at, sync_status
-                 ) VALUES(
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?23, 'pending'
-                 ) ON CONFLICT(id) DO NOTHING",
-            )?;
+            let mut statement = transaction.prepare_cached(INSERT_USAGE_EVENT_SQL)?;
             for event in events {
-                inserted += statement.execute(params![
-                    event.id,
-                    event.provider,
-                    event.source,
-                    event.source_type.as_str(),
-                    event.native_session_id,
-                    event.native_event_id,
-                    event.occurred_at.to_rfc3339(),
-                    event.model,
-                    event.project_name,
-                    event.tokens.input_tokens,
-                    event.tokens.cached_input_tokens,
-                    event.tokens.cache_write_tokens,
-                    event.tokens.cache_write_5m_tokens,
-                    event.tokens.cache_write_1h_tokens,
-                    event.tokens.output_tokens,
-                    event.tokens.reasoning_tokens,
-                    event.tokens.total_tokens,
-                    event.estimated_api_value_usd_micros,
-                    event.native_cost_usd_ticks,
-                    event.pricing_status,
-                    event.measurement_kind.as_str(),
-                    event.device_id,
-                    event.created_at.to_rfc3339(),
-                ])?;
+                inserted += insert_usage_event(&mut statement, event)?;
             }
         }
         transaction.commit()?;
         Ok(inserted)
+    }
+
+    /// Inserts new Claude request events and revises an existing v2 request row only
+    /// when the incoming cumulative snapshot is strictly more authoritative.
+    pub fn upsert_claude_request_events(&self, events: &[UsageEvent]) -> Result<EventWriteSummary> {
+        if events.is_empty() {
+            return Ok(EventWriteSummary::default());
+        }
+        for event in events {
+            validate_claude_request_event(event)?;
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut summary = EventWriteSummary::default();
+        {
+            let mut insert = transaction.prepare_cached(INSERT_USAGE_EVENT_SQL)?;
+            for event in events {
+                if insert_usage_event(&mut insert, event)? > 0 {
+                    summary.inserted += 1;
+                    continue;
+                }
+
+                let stored = transaction
+                    .query_row(
+                        "SELECT provider, source, source_type, native_session_id, native_event_id,
+                                device_id, measurement_kind, occurred_at, model, project_name,
+                                input_tokens, cached_input_tokens, cache_write_tokens,
+                                cache_write_5m_tokens, cache_write_1h_tokens, output_tokens,
+                                reasoning_tokens, total_tokens, updated_at, superseded_by_event_id
+                         FROM usage_events WHERE id = ?1",
+                        [&event.id],
+                        |row| {
+                            Ok(StoredSnapshot {
+                                provider: row.get(0)?,
+                                source: row.get(1)?,
+                                source_type: row.get(2)?,
+                                native_session_id: row.get(3)?,
+                                native_event_id: row.get(4)?,
+                                device_id: row.get(5)?,
+                                measurement_kind: row.get(6)?,
+                                occurred_at: parse_datetime(row.get(7)?, 7)?,
+                                model: row.get(8)?,
+                                project_name: row.get(9)?,
+                                tokens: TokenCounts {
+                                    input_tokens: row.get(10)?,
+                                    cached_input_tokens: row.get(11)?,
+                                    cache_write_tokens: row.get(12)?,
+                                    cache_write_5m_tokens: row.get(13)?,
+                                    cache_write_1h_tokens: row.get(14)?,
+                                    output_tokens: row.get(15)?,
+                                    reasoning_tokens: row.get(16)?,
+                                    total_tokens: row.get(17)?,
+                                },
+                                updated_at: parse_datetime(row.get(18)?, 18)?,
+                                superseded_by_event_id: row.get(19)?,
+                            })
+                        },
+                    )
+                    .optional()?
+                    .ok_or_else(|| {
+                        DatabaseError::Invalid(format!(
+                            "conflicting Claude event {} disappeared during persistence",
+                            event.id
+                        ))
+                    })?;
+                validate_stored_claude_identity(event, &stored)?;
+                if !is_more_authoritative_snapshot(
+                    &event.tokens,
+                    &event.occurred_at,
+                    event.model.as_deref(),
+                    event.project_name.as_deref(),
+                    &stored.tokens,
+                    &stored.occurred_at,
+                    stored.model.as_deref(),
+                    stored.project_name.as_deref(),
+                ) {
+                    continue;
+                }
+                let updated_at = std::cmp::max(
+                    Utc::now(),
+                    stored
+                        .updated_at
+                        .checked_add_signed(TimeDelta::microseconds(1))
+                        .unwrap_or(stored.updated_at),
+                );
+
+                let updated = transaction.execute(
+                    "UPDATE usage_events SET
+                       occurred_at = ?8,
+                       model = COALESCE(?9, model),
+                       project_name = COALESCE(?10, project_name),
+                       input_tokens = ?11,
+                       cached_input_tokens = ?12,
+                       cache_write_tokens = ?13,
+                       cache_write_5m_tokens = ?14,
+                       cache_write_1h_tokens = ?15,
+                       output_tokens = ?16,
+                       reasoning_tokens = ?17,
+                       total_tokens = ?18,
+                       estimated_api_value_usd_micros = ?19,
+                       native_cost_usd_ticks = COALESCE(?20, native_cost_usd_ticks),
+                       pricing_status = ?21,
+                       updated_at = ?22,
+                       sync_status = 'pending',
+                       last_sync_error = NULL
+                     WHERE id = ?1 AND provider = ?2 AND source = ?3 AND source_type = ?4
+                       AND native_session_id = ?5 AND native_event_id = ?6 AND device_id = ?7
+                       AND measurement_kind = ?23 AND superseded_by_event_id IS NULL",
+                    params![
+                        event.id,
+                        event.provider,
+                        event.source,
+                        event.source_type.as_str(),
+                        event.native_session_id,
+                        event.native_event_id,
+                        event.device_id,
+                        event.occurred_at.to_rfc3339(),
+                        event.model,
+                        event.project_name,
+                        event.tokens.input_tokens,
+                        event.tokens.cached_input_tokens,
+                        event.tokens.cache_write_tokens,
+                        event.tokens.cache_write_5m_tokens,
+                        event.tokens.cache_write_1h_tokens,
+                        event.tokens.output_tokens,
+                        event.tokens.reasoning_tokens,
+                        event.tokens.total_tokens,
+                        event.estimated_api_value_usd_micros,
+                        event.native_cost_usd_ticks,
+                        event.pricing_status,
+                        updated_at.to_rfc3339(),
+                        event.measurement_kind.as_str(),
+                    ],
+                )?;
+                if updated != 1 {
+                    return Err(DatabaseError::Invalid(format!(
+                        "Claude event {} failed its constrained identity update",
+                        event.id
+                    )));
+                }
+                summary.updated += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(summary)
     }
 
     /// Marks only uniquely matched legacy Grok rows as superseded. The old row remains
@@ -635,6 +782,76 @@ impl Database {
     }
 }
 
+fn insert_usage_event(
+    statement: &mut CachedStatement<'_>,
+    event: &UsageEvent,
+) -> rusqlite::Result<usize> {
+    statement.execute(params![
+        event.id,
+        event.provider,
+        event.source,
+        event.source_type.as_str(),
+        event.native_session_id,
+        event.native_event_id,
+        event.occurred_at.to_rfc3339(),
+        event.model,
+        event.project_name,
+        event.tokens.input_tokens,
+        event.tokens.cached_input_tokens,
+        event.tokens.cache_write_tokens,
+        event.tokens.cache_write_5m_tokens,
+        event.tokens.cache_write_1h_tokens,
+        event.tokens.output_tokens,
+        event.tokens.reasoning_tokens,
+        event.tokens.total_tokens,
+        event.estimated_api_value_usd_micros,
+        event.native_cost_usd_ticks,
+        event.pricing_status,
+        event.measurement_kind.as_str(),
+        event.device_id,
+        event.created_at.to_rfc3339(),
+    ])
+}
+
+fn validate_claude_request_event(event: &UsageEvent) -> Result<()> {
+    let expected_id = deterministic_event_id(
+        &event.provider,
+        &event.native_session_id,
+        &event.native_event_id,
+    );
+    if event.provider != "claude"
+        || event.source != "claude_code"
+        || event.source_type != SourceType::LocalCli
+        || event.measurement_kind != MeasurementKind::Measured
+        || event.native_session_id.is_empty()
+        || event.native_event_id.is_empty()
+        || event.id != expected_id
+    {
+        return Err(DatabaseError::Invalid(
+            "revisable persistence accepts only valid Claude Code request events".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stored_claude_identity(event: &UsageEvent, stored: &StoredSnapshot) -> Result<()> {
+    if stored.provider != event.provider
+        || stored.source != event.source
+        || stored.source_type != event.source_type.as_str()
+        || stored.native_session_id != event.native_session_id
+        || stored.native_event_id != event.native_event_id
+        || stored.device_id != event.device_id
+        || stored.measurement_kind != event.measurement_kind.as_str()
+        || stored.superseded_by_event_id.is_some()
+    {
+        return Err(DatabaseError::Invalid(format!(
+            "Claude event {} conflicts with a different stored identity",
+            event.id
+        )));
+    }
+    Ok(())
+}
+
 fn map_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     Ok(Device {
         id: row.get(0)?,
@@ -786,6 +1003,165 @@ mod tests {
                 .insert_usage_events(std::slice::from_ref(&event))
                 .unwrap(),
             0
+        );
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
+    }
+
+    #[test]
+    fn claude_revisions_update_only_richer_same_identity_snapshots() {
+        let (_directory, database, device) = database();
+        let occurred_at = "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut aggregate = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session",
+            "request:req-cache-detail",
+            occurred_at,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("Fixture".into()),
+            TokenCounts {
+                input_tokens: 10,
+                cache_write_tokens: 100,
+                output_tokens: 10,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut aggregate))
+            .unwrap();
+        assert_eq!(aggregate.pricing_status, "partial");
+        assert_eq!(
+            database
+                .upsert_claude_request_events(std::slice::from_ref(&aggregate))
+                .unwrap(),
+            EventWriteSummary {
+                inserted: 1,
+                updated: 0
+            }
+        );
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute(
+                "UPDATE usage_events SET sync_status = 'synced',
+                    updated_at = '2099-01-01T00:00:00Z' WHERE id = ?1",
+                [&aggregate.id],
+            )
+            .unwrap();
+        let (created_at, first_updated_at): (String, String) = connection
+            .query_row(
+                "SELECT created_at, updated_at FROM usage_events WHERE id = ?1",
+                [&aggregate.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut detailed = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session",
+            "request:req-cache-detail",
+            occurred_at,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("Fixture".into()),
+            TokenCounts {
+                input_tokens: 10,
+                cache_write_tokens: 100,
+                cache_write_5m_tokens: 60,
+                cache_write_1h_tokens: 40,
+                output_tokens: 10,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut detailed)).unwrap();
+        assert_eq!(detailed.id, aggregate.id);
+        assert_eq!(detailed.pricing_status, "available");
+        assert_eq!(
+            database
+                .upsert_claude_request_events(std::slice::from_ref(&detailed))
+                .unwrap(),
+            EventWriteSummary {
+                inserted: 0,
+                updated: 1
+            }
+        );
+
+        let connection = Connection::open(database.path()).unwrap();
+        let revised: (i64, i64, i64, i64, String, String, String) = connection
+            .query_row(
+                "SELECT COUNT(*), total_tokens, cache_write_5m_tokens,
+                        cache_write_1h_tokens, pricing_status, created_at, updated_at
+                 FROM usage_events WHERE id = ?1",
+                [&detailed.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(revised.0, 1);
+        assert_eq!((revised.1, revised.2, revised.3), (120, 60, 40));
+        assert_eq!(revised.4, "available");
+        assert_eq!(revised.5, created_at);
+        assert!(
+            parse_datetime(revised.6, 6).unwrap() > parse_datetime(first_updated_at, 6).unwrap()
+        );
+        let sync_status: String = connection
+            .query_row(
+                "SELECT sync_status FROM usage_events WHERE id = ?1",
+                [&detailed.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sync_status, "pending");
+        drop(connection);
+
+        let mut richer_without_repeated_model = detailed.clone();
+        richer_without_repeated_model.model = None;
+        richer_without_repeated_model.tokens.input_tokens = 20;
+        richer_without_repeated_model.tokens.total_tokens = 130;
+        crate::pricing::price_usage_events(
+            &database,
+            std::slice::from_mut(&mut richer_without_repeated_model),
+        )
+        .unwrap();
+        assert_eq!(
+            richer_without_repeated_model.model.as_deref(),
+            Some("claude-sonnet-5-20260801")
+        );
+        assert_eq!(richer_without_repeated_model.pricing_status, "available");
+
+        let mut stale = detailed.clone();
+        stale.tokens = TokenCounts {
+            input_tokens: 60,
+            output_tokens: 20,
+            total_tokens: 80,
+            ..Default::default()
+        };
+        stale.occurred_at = "2026-08-29T00:02:00Z".parse::<DateTime<Utc>>().unwrap();
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut stale)).unwrap();
+        assert_eq!(
+            database.upsert_claude_request_events(&[stale]).unwrap(),
+            EventWriteSummary::default()
+        );
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
+
+        let mut wrong_device = detailed;
+        wrong_device.device_id = "different-device".into();
+        assert!(
+            database
+                .upsert_claude_request_events(&[wrong_device])
+                .is_err()
         );
         assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
     }

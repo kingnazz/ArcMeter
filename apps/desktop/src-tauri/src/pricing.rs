@@ -1,7 +1,7 @@
 use crate::db::{Database, DatabaseError, Result as DatabaseResult};
-use crate::domain::TokenCounts;
+use crate::domain::{TokenCounts, UsageEvent};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,21 +176,13 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
     let transaction = connection.transaction()?;
     let mut changed = 0;
     for event in events {
-        let rule = find_rule(
+        let (value, status) = price_event_fields(
             &transaction,
             &event.provider,
             &event.model,
             &event.occurred_at,
             &event.tokens,
         )?;
-        let (value, status) = match rule
-            .as_ref()
-            .map(|rule| calculate_api_value(&event.tokens, rule))
-        {
-            Some(PricingResult::Available(value)) => (Some(value), "available"),
-            Some(PricingResult::Partial(value)) => (Some(value), "partial"),
-            _ => (None, "unavailable"),
-        };
         if event.previous_value == value && event.previous_status == status {
             continue;
         }
@@ -204,6 +196,70 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
     }
     transaction.commit()?;
     Ok(changed)
+}
+
+/// Prices parsed events before they enter the ledger. This lets a cumulative
+/// Claude revision update its counters and derived value in one local write.
+pub fn price_usage_events(database: &Database, events: &mut [UsageEvent]) -> DatabaseResult<()> {
+    let connection = Connection::open(database.path())?;
+    for event in events {
+        if event.model.is_none() {
+            event.model = connection
+                .query_row(
+                    "SELECT model FROM usage_events
+                     WHERE id = ?1 AND provider = ?2 AND source = ?3 AND source_type = ?4
+                       AND native_session_id = ?5 AND native_event_id = ?6 AND device_id = ?7
+                       AND measurement_kind = ?8 AND superseded_by_event_id IS NULL",
+                    params![
+                        event.id,
+                        event.provider,
+                        event.source,
+                        event.source_type.as_str(),
+                        event.native_session_id,
+                        event.native_event_id,
+                        event.device_id,
+                        event.measurement_kind.as_str(),
+                    ],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+        }
+        let Some(model) = event.model.as_deref() else {
+            event.estimated_api_value_usd_micros = None;
+            event.pricing_status = "unavailable".into();
+            continue;
+        };
+        let (value, status) = price_event_fields(
+            &connection,
+            &event.provider,
+            model,
+            &event.occurred_at.to_rfc3339(),
+            &event.tokens,
+        )?;
+        event.estimated_api_value_usd_micros = value;
+        event.pricing_status = status.into();
+    }
+    Ok(())
+}
+
+fn price_event_fields(
+    connection: &Connection,
+    provider: &str,
+    model: &str,
+    occurred_at: &str,
+    tokens: &TokenCounts,
+) -> DatabaseResult<(Option<i64>, &'static str)> {
+    Ok(
+        match find_rule(connection, provider, model, occurred_at, tokens)?
+            .as_ref()
+            .map(|rule| calculate_api_value(tokens, rule))
+        {
+            Some(PricingResult::Available(value)) => (Some(value), "available"),
+            Some(PricingResult::Partial(value)) => (Some(value), "partial"),
+            _ => (None, "unavailable"),
+        },
+    )
 }
 
 #[derive(Debug)]

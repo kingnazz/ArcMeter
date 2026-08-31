@@ -1,7 +1,7 @@
 use super::{diagnostic, parse_timestamp, value_i64, value_string};
 use crate::domain::{
     CollectorOutput, EventReconciliation, TokenCounts, UsageEvent, deterministic_event_id,
-    fallback_event_fingerprint,
+    fallback_event_fingerprint, is_more_authoritative_snapshot,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -11,21 +11,19 @@ use std::path::Path;
 
 struct Candidate {
     event: UsageEvent,
-    detailed_cache_tokens: i64,
 }
 
 impl Candidate {
     fn is_more_authoritative_than(&self, other: &Self) -> bool {
-        (
-            self.event.tokens.total_tokens,
-            self.detailed_cache_tokens,
-            self.event.tokens.output_tokens,
-            self.event.occurred_at,
-        ) > (
-            other.event.tokens.total_tokens,
-            other.detailed_cache_tokens,
-            other.event.tokens.output_tokens,
-            other.event.occurred_at,
+        is_more_authoritative_snapshot(
+            &self.event.tokens,
+            &self.event.occurred_at,
+            self.event.model.as_deref(),
+            self.event.project_name.as_deref(),
+            &other.event.tokens,
+            &other.event.occurred_at,
+            other.event.model.as_deref(),
+            other.event.project_name.as_deref(),
         )
     }
 }
@@ -186,10 +184,7 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
             tokens,
             device_id,
         );
-        let candidate = Candidate {
-            event,
-            detailed_cache_tokens,
-        };
+        let candidate = Candidate { event };
         if legacy_event_id != candidate.event.id {
             output.reconciliation_hints.push(EventReconciliation {
                 legacy_event_id,

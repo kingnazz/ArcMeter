@@ -19,6 +19,18 @@ One API request can appear in more than one assistant record. ArcMeter emits one
 
 The fallback never uses a JSONL row number. When duplicate snapshots share the same request identity, ArcMeter keeps the most complete cumulative usage snapshot instead of summing them. Database identity remains the SHA-256 of provider, session, and the selected native request identity, so replay and equivalent source roots insert no duplicates.
 
+Claude request events are revisable because Claude Code can append increasingly complete snapshots after ArcMeter has already scanned a file. A new request is inserted normally. A same-ID request updates the existing row in place only when its authority tuple improves, in this exact order:
+
+1. greater authoritative total tokens
+2. greater 5-minute plus 1-hour cache-write detail
+3. greater output tokens
+4. newly available model metadata, then newly available basename-only project metadata
+5. later provider timestamp when the usage and metadata above are otherwise equivalent
+
+A lower tuple is stale and cannot replace the stored row. The update additionally requires the same provider, source, source type, session, native request identity, originating device, measurement kind, and deterministic ID. Missing model or project metadata never erases a stored value. An accepted revision preserves `id` and `created_at`, advances `updated_at`, and returns `sync_status` to `pending`.
+
+ArcMeter recalculates local pricing from the incoming model and complete token breakdown before this write. The existing Supabase upload remains a primary-key merge on the same event ID, so the pending revision updates the cloud row rather than creating another event. This live same-ID revision is separate from parser-v1-to-v2 reconciliation, which maps an old event ID to the new request-level event ID.
+
 Parser version 2 reconstructs the exact event IDs produced by parser version 1 for every source record. Existing legacy rows are retained and marked with `superseded_by_event_id` only when that source identity proves the replacement. An additional exact token-shape reconciliation handles a uniquely matching legacy row. Ambiguous or unmatched rows remain active and produce a Settings diagnostic.
 
 ## Token accounting

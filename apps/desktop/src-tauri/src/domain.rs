@@ -74,6 +74,47 @@ impl TokenCounts {
     }
 }
 
+/// Compares cumulative request snapshots without treating a later write as
+/// authoritative merely because it was observed later. Usage completeness wins
+/// first, then newly available privacy-safe metadata, then provider timestamp.
+#[allow(clippy::too_many_arguments)]
+pub fn is_more_authoritative_snapshot(
+    incoming_tokens: &TokenCounts,
+    incoming_occurred_at: &DateTime<Utc>,
+    incoming_model: Option<&str>,
+    incoming_project_name: Option<&str>,
+    stored_tokens: &TokenCounts,
+    stored_occurred_at: &DateTime<Utc>,
+    stored_model: Option<&str>,
+    stored_project_name: Option<&str>,
+) -> bool {
+    let incoming_usage = (
+        incoming_tokens.total_tokens,
+        incoming_tokens
+            .cache_write_5m_tokens
+            .saturating_add(incoming_tokens.cache_write_1h_tokens),
+        incoming_tokens.output_tokens,
+    );
+    let stored_usage = (
+        stored_tokens.total_tokens,
+        stored_tokens
+            .cache_write_5m_tokens
+            .saturating_add(stored_tokens.cache_write_1h_tokens),
+        stored_tokens.output_tokens,
+    );
+    if incoming_usage != stored_usage {
+        return incoming_usage > stored_usage;
+    }
+
+    let incoming_metadata = (incoming_model.is_some(), incoming_project_name.is_some());
+    let stored_metadata = (stored_model.is_some(), stored_project_name.is_some());
+    if incoming_metadata != stored_metadata {
+        return incoming_metadata > stored_metadata;
+    }
+
+    incoming_occurred_at > stored_occurred_at
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageEvent {
@@ -304,5 +345,53 @@ mod tests {
         assert_eq!(first.tokens, TokenCounts::default());
         assert_eq!(first.measurement_kind, MeasurementKind::ActivityOnly);
         assert_eq!(first.source_type, SourceType::Browser);
+    }
+
+    #[test]
+    fn cumulative_snapshot_authority_is_monotonic_and_detail_aware() {
+        let timestamp = "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let later = "2026-08-29T00:01:00Z".parse::<DateTime<Utc>>().unwrap();
+        let aggregate = TokenCounts {
+            cache_write_tokens: 100,
+            total_tokens: 120,
+            ..Default::default()
+        };
+        let detailed = TokenCounts {
+            cache_write_tokens: 100,
+            cache_write_5m_tokens: 60,
+            cache_write_1h_tokens: 40,
+            total_tokens: 120,
+            ..Default::default()
+        };
+        assert!(is_more_authoritative_snapshot(
+            &detailed, &timestamp, None, None, &aggregate, &timestamp, None, None,
+        ));
+        assert!(is_more_authoritative_snapshot(
+            &aggregate,
+            &timestamp,
+            Some("claude-sonnet-5"),
+            None,
+            &aggregate,
+            &timestamp,
+            None,
+            None,
+        ));
+        assert!(is_more_authoritative_snapshot(
+            &aggregate, &later, None, None, &aggregate, &timestamp, None, None,
+        ));
+        let smaller = TokenCounts {
+            total_tokens: 80,
+            ..Default::default()
+        };
+        assert!(!is_more_authoritative_snapshot(
+            &smaller,
+            &later,
+            Some("claude-sonnet-5"),
+            Some("Fixture"),
+            &aggregate,
+            &timestamp,
+            None,
+            None,
+        ));
     }
 }

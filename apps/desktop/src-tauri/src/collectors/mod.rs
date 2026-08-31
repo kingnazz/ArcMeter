@@ -138,17 +138,38 @@ fn scan_provider(
             continue;
         }
 
-        let output = parse_path(specification.provider, path, device_id);
+        let mut output = parse_path(specification.provider, path, device_id);
         records_seen += output.records_seen;
         diagnostics.extend(output.diagnostics.clone());
         if let Some(latest) = output.events.iter().map(|event| event.occurred_at).max() {
             last_usage_at = Some(last_usage_at.map_or(latest, |current| current.max(latest)));
         }
         let mut persistence_succeeded = true;
-        match database.insert_usage_events(&output.events) {
+        if specification.provider == "claude"
+            && let Err(error) = crate::pricing::price_usage_events(database, &mut output.events)
+        {
+            persistence_succeeded = false;
+            diagnostics.push(diagnostic(
+                "error",
+                "claude_pricing_failed",
+                &error.to_string(),
+                None,
+            ));
+        }
+        let write_result = if persistence_succeeded && specification.provider == "claude" {
+            database
+                .upsert_claude_request_events(&output.events)
+                .map(|summary| summary.inserted)
+        } else if persistence_succeeded {
+            database.insert_usage_events(&output.events)
+        } else {
+            Ok(0)
+        };
+        match write_result {
             Ok(count) => {
                 inserted += count;
-                if specification.provider == "grok"
+                if persistence_succeeded
+                    && specification.provider == "grok"
                     && let Err(error) = database.reconcile_grok_events(&output.events)
                 {
                     persistence_succeeded = false;
@@ -159,7 +180,8 @@ fn scan_provider(
                         None,
                     ));
                 }
-                if specification.provider == "claude"
+                if persistence_succeeded
+                    && specification.provider == "claude"
                     && let Err(error) = database
                         .reconcile_claude_events(&output.events, &output.reconciliation_hints)
                 {
@@ -551,6 +573,41 @@ pub(crate) fn value_string(value: Option<&serde_json::Value>) -> Option<String> 
 mod tests {
     use super::*;
 
+    fn claude_request_snapshot(
+        timestamp: &str,
+        input: i64,
+        cache_read: i64,
+        cache_write: i64,
+        cache_write_5m: i64,
+        cache_write_1h: i64,
+        output: i64,
+    ) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "assistant",
+                "requestId": "req-123",
+                "sessionId": "session-123",
+                "timestamp": timestamp,
+                "cwd": "SyntheticProject",
+                "message": {
+                    "id": "message-123",
+                    "model": "claude-sonnet-5-20260801",
+                    "usage": {
+                        "input_tokens": input,
+                        "cache_read_input_tokens": cache_read,
+                        "cache_creation_input_tokens": cache_write,
+                        "cache_creation": {
+                            "ephemeral_5m_input_tokens": cache_write_5m,
+                            "ephemeral_1h_input_tokens": cache_write_1h
+                        },
+                        "output_tokens": output
+                    }
+                }
+            })
+        )
+    }
+
     #[test]
     fn unchanged_scan_keeps_persisted_last_usage() {
         let temporary = tempfile::tempdir().unwrap();
@@ -587,6 +644,134 @@ mod tests {
         assert_eq!(second.measured_tokens, first.measured_tokens);
         assert_eq!(first.files_seen, 1);
         assert_eq!(first.measured_records, 9);
+    }
+
+    #[test]
+    fn changed_claude_file_revises_one_request_without_regression() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("claude");
+        std::fs::create_dir_all(&source).unwrap();
+        let session = source.join("session.jsonl");
+        std::fs::write(
+            &session,
+            claude_request_snapshot("2026-08-29T00:00:00Z", 100, 0, 0, 0, 0, 20),
+        )
+        .unwrap();
+        let database = Database::open(temporary.path().join("arcmeter.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+
+        let first = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new(
+                "claude",
+                "Claude Code CLI",
+                vec![source.clone()],
+                &["jsonl"],
+            ),
+        );
+        assert_eq!(first.records_inserted, 1);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
+        let connection = rusqlite::Connection::open(database.path()).unwrap();
+        let (event_id, created_at): (String, String) = connection
+            .query_row(
+                "SELECT id, created_at FROM usage_events WHERE provider = 'claude'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE usage_events SET sync_status = 'synced',
+                    updated_at = '2026-08-29T00:00:00Z' WHERE id = ?1",
+                [&event_id],
+            )
+            .unwrap();
+        drop(connection);
+
+        std::fs::write(
+            &session,
+            claude_request_snapshot("2026-08-29T00:01:00Z", 100, 50, 20, 12, 8, 40),
+        )
+        .unwrap();
+        let richer = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new(
+                "claude",
+                "Claude Code CLI",
+                vec![source.clone()],
+                &["jsonl"],
+            ),
+        );
+        assert_eq!(richer.records_inserted, 0);
+        assert_eq!(richer.measured_records, 1);
+        assert_eq!(richer.measured_tokens, 210);
+
+        let connection = rusqlite::Connection::open(database.path()).unwrap();
+        let revised: (i64, String, i64, i64, i64, i64, i64, String, String, String) = connection
+            .query_row(
+                "SELECT COUNT(*), id, input_tokens, cached_input_tokens, cache_write_tokens,
+                        output_tokens, total_tokens, created_at, updated_at, sync_status
+                 FROM usage_events WHERE provider = 'claude'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(revised.0, 1);
+        assert_eq!(revised.1, event_id);
+        assert_eq!(
+            (revised.2, revised.3, revised.4, revised.5, revised.6),
+            (100, 50, 20, 40, 210)
+        );
+        assert_eq!(revised.7, created_at);
+        assert!(
+            revised.8.parse::<DateTime<Utc>>().unwrap()
+                > "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(revised.9, "pending");
+        drop(connection);
+
+        let replay = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new(
+                "claude",
+                "Claude Code CLI",
+                vec![source.clone()],
+                &["jsonl"],
+            ),
+        );
+        assert_eq!(replay.records_inserted, 0);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 210));
+
+        std::fs::write(
+            &session,
+            claude_request_snapshot("2026-08-29T00:02:00Z", 50, 0, 0, 0, 0, 10),
+        )
+        .unwrap();
+        let stale = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new("claude", "Claude Code CLI", vec![source], &["jsonl"]),
+        );
+        assert_eq!(stale.records_inserted, 0);
+        assert_eq!(stale.measured_records, 1);
+        assert_eq!(stale.measured_tokens, 210);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 210));
     }
 
     #[test]
