@@ -243,9 +243,9 @@ fn pending_events(database: &Database, limit: i64) -> Result<Vec<Value>, SyncErr
     let mut statement = connection.prepare(
         "SELECT id, device_id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
                 model, project_name, input_tokens, cached_input_tokens, cache_write_tokens,
-                output_tokens, reasoning_tokens, total_tokens, estimated_api_value_usd_micros,
-                native_cost_usd_ticks, pricing_status, measurement_kind, created_at, updated_at,
-                superseded_by_event_id
+                cache_write_5m_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens,
+                total_tokens, estimated_api_value_usd_micros, native_cost_usd_ticks,
+                pricing_status, measurement_kind, created_at, updated_at, superseded_by_event_id
          FROM usage_events WHERE sync_status IN ('pending', 'error') ORDER BY created_at LIMIT ?1",
     )?;
     let rows = statement.query_map([limit], |row| {
@@ -256,13 +256,16 @@ fn pending_events(database: &Database, limit: i64) -> Result<Vec<Value>, SyncErr
             "native_event_id": row.get::<_, String>(6)?, "occurred_at": row.get::<_, String>(7)?,
             "model": row.get::<_, Option<String>>(8)?, "project_name": row.get::<_, Option<String>>(9)?,
             "input_tokens": row.get::<_, i64>(10)?, "cached_input_tokens": row.get::<_, i64>(11)?,
-            "cache_write_tokens": row.get::<_, i64>(12)?, "output_tokens": row.get::<_, i64>(13)?,
-            "reasoning_tokens": row.get::<_, i64>(14)?, "total_tokens": row.get::<_, i64>(15)?,
-            "estimated_api_value_usd_micros": row.get::<_, Option<i64>>(16)?,
-            "native_cost_usd_ticks": row.get::<_, Option<i64>>(17)?,
-            "pricing_status": row.get::<_, String>(18)?, "measurement_kind": row.get::<_, String>(19)?,
-            "created_at": row.get::<_, String>(20)?, "updated_at": row.get::<_, String>(21)?,
-            "superseded_by_event_id": row.get::<_, Option<String>>(22)?
+            "cache_write_tokens": row.get::<_, i64>(12)?,
+            "cache_write_5m_tokens": row.get::<_, i64>(13)?,
+            "cache_write_1h_tokens": row.get::<_, i64>(14)?,
+            "output_tokens": row.get::<_, i64>(15)?,
+            "reasoning_tokens": row.get::<_, i64>(16)?, "total_tokens": row.get::<_, i64>(17)?,
+            "estimated_api_value_usd_micros": row.get::<_, Option<i64>>(18)?,
+            "native_cost_usd_ticks": row.get::<_, Option<i64>>(19)?,
+            "pricing_status": row.get::<_, String>(20)?, "measurement_kind": row.get::<_, String>(21)?,
+            "created_at": row.get::<_, String>(22)?, "updated_at": row.get::<_, String>(23)?,
+            "superseded_by_event_id": row.get::<_, Option<String>>(24)?
         }))
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -335,16 +338,19 @@ fn apply_remote_events(database: &Database, rows: &[Value]) -> Result<usize, Syn
         applied += transaction.execute(
             "INSERT INTO usage_events(id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
                model, project_name, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-               reasoning_tokens, total_tokens, estimated_api_value_usd_micros, native_cost_usd_ticks,
-               pricing_status, measurement_kind, device_id, created_at, updated_at, superseded_by_event_id,
-               sync_status)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,'synced')
+               cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens, total_tokens,
+               estimated_api_value_usd_micros, native_cost_usd_ticks, pricing_status,
+               measurement_kind, device_id, created_at, updated_at, superseded_by_event_id, sync_status)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,'synced')
              ON CONFLICT(id) DO UPDATE SET
                provider=excluded.provider, source=excluded.source, source_type=excluded.source_type,
                native_session_id=excluded.native_session_id, native_event_id=excluded.native_event_id,
                occurred_at=excluded.occurred_at, model=excluded.model, project_name=excluded.project_name,
                input_tokens=excluded.input_tokens, cached_input_tokens=excluded.cached_input_tokens,
-               cache_write_tokens=excluded.cache_write_tokens, output_tokens=excluded.output_tokens,
+               cache_write_tokens=excluded.cache_write_tokens,
+               cache_write_5m_tokens=excluded.cache_write_5m_tokens,
+               cache_write_1h_tokens=excluded.cache_write_1h_tokens,
+               output_tokens=excluded.output_tokens,
                reasoning_tokens=excluded.reasoning_tokens, total_tokens=excluded.total_tokens,
                estimated_api_value_usd_micros=excluded.estimated_api_value_usd_micros,
                native_cost_usd_ticks=excluded.native_cost_usd_ticks, pricing_status=excluded.pricing_status,
@@ -354,8 +360,10 @@ fn apply_remote_events(database: &Database, rows: &[Value]) -> Result<usize, Syn
             params![id, string(row,"provider"), string(row,"source"), string(row,"source_type"), string(row,"native_session_id"),
               string(row,"native_event_id"), string(row,"occurred_at"), row.get("model").and_then(Value::as_str),
               row.get("project_name").and_then(Value::as_str), integer(row,"input_tokens"), integer(row,"cached_input_tokens"),
-              integer(row,"cache_write_tokens"), integer(row,"output_tokens"), integer(row,"reasoning_tokens"),
-              integer(row,"total_tokens"), row.get("estimated_api_value_usd_micros").and_then(Value::as_i64),
+              integer(row,"cache_write_tokens"), integer(row,"output_tokens"),
+              integer(row,"cache_write_5m_tokens"), integer(row,"cache_write_1h_tokens"),
+              integer(row,"reasoning_tokens"), integer(row,"total_tokens"),
+              row.get("estimated_api_value_usd_micros").and_then(Value::as_i64),
               row.get("native_cost_usd_ticks").and_then(Value::as_i64), string(row,"pricing_status"),
               string(row,"measurement_kind"), string(row,"device_id"), string(row,"created_at"),
               string(row,"updated_at"), row.get("superseded_by_event_id").and_then(Value::as_str)],
@@ -503,6 +511,8 @@ mod tests {
         let pending = pending_events(&database, 250).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0]["cache_write_tokens"], 0);
+        assert_eq!(pending[0]["cache_write_5m_tokens"], 0);
+        assert_eq!(pending[0]["cache_write_1h_tokens"], 0);
         assert!(pending[0]["native_cost_usd_ticks"].is_null());
         assert!(pending[0]["superseded_by_event_id"].is_null());
 
@@ -521,6 +531,8 @@ mod tests {
             "input_tokens": 20,
             "cached_input_tokens": 5,
             "cache_write_tokens": 3,
+            "cache_write_5m_tokens": 2,
+            "cache_write_1h_tokens": 1,
             "output_tokens": 4,
             "reasoning_tokens": 0,
             "total_tokens": 24,
@@ -547,14 +559,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!((events, tokens), (2, 36));
-        let synced_metadata: (i64, Option<i64>, Option<String>) = connection
+        let synced_metadata: (i64, i64, i64, Option<i64>, Option<String>) = connection
             .query_row(
-                "SELECT cache_write_tokens, native_cost_usd_ticks, superseded_by_event_id
+                "SELECT cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+                   native_cost_usd_ticks, superseded_by_event_id
                  FROM usage_events WHERE id = ?1",
                 ["b".repeat(64)],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .unwrap();
-        assert_eq!(synced_metadata, (3, Some(120_000_000), Some(local_id)));
+        assert_eq!(
+            synced_metadata,
+            (3, 2, 1, Some(120_000_000), Some(local_id))
+        );
     }
 }

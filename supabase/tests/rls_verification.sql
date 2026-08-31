@@ -1,6 +1,21 @@
 -- Run after migrations in a Supabase local database. The transaction is always rolled back.
 begin;
 
+do $$
+begin
+  if (select count(*) from information_schema.columns
+      where table_schema = 'public' and table_name = 'usage_events'
+        and column_name in ('cache_write_tokens', 'cache_write_5m_tokens', 'cache_write_1h_tokens')) <> 3 then
+    raise exception 'Schema failure: cache-write metadata columns are incomplete';
+  end if;
+  if (select count(*) from information_schema.columns
+      where table_schema = 'public' and table_name = 'pricing'
+        and column_name in ('input_token_semantics', 'cache_write_5m_usd_micros_per_million', 'cache_write_1h_usd_micros_per_million')) <> 3 then
+    raise exception 'Schema failure: cache pricing columns are incomplete';
+  end if;
+end;
+$$;
+
 insert into auth.users(id, aud, role, email, email_confirmed_at, created_at, updated_at) values
   ('10000000-0000-0000-0000-000000000001', 'authenticated', 'authenticated', 'owner-a@example.test', now(), now(), now()),
   ('20000000-0000-0000-0000-000000000002', 'authenticated', 'authenticated', 'owner-b@example.test', now(), now(), now());

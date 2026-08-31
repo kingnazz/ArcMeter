@@ -46,6 +46,8 @@ pub struct TokenCounts {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
     pub cache_write_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
     pub total_tokens: i64,
@@ -56,6 +58,12 @@ impl TokenCounts {
         self.input_tokens = self.input_tokens.max(0);
         self.cached_input_tokens = self.cached_input_tokens.max(0);
         self.cache_write_tokens = self.cache_write_tokens.max(0);
+        self.cache_write_5m_tokens = self.cache_write_5m_tokens.max(0);
+        self.cache_write_1h_tokens = self.cache_write_1h_tokens.max(0);
+        self.cache_write_tokens = self.cache_write_tokens.max(
+            self.cache_write_5m_tokens
+                .saturating_add(self.cache_write_1h_tokens),
+        );
         self.output_tokens = self.output_tokens.max(0);
         self.reasoning_tokens = self.reasoning_tokens.max(0);
         let derived = self.input_tokens.saturating_add(self.output_tokens);
@@ -213,10 +221,18 @@ pub struct CollectorDiagnostic {
     pub record_number: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventReconciliation {
+    pub legacy_event_id: String,
+    pub replacement_event_id: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectorOutput {
     pub events: Vec<UsageEvent>,
+    pub reconciliation_hints: Vec<EventReconciliation>,
     pub diagnostics: Vec<CollectorDiagnostic>,
     pub records_seen: usize,
     pub records_ignored: usize,

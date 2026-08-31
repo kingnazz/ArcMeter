@@ -68,6 +68,8 @@ pub struct ActivityItem {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
     pub cache_write_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
     pub native_cost_usd_ticks: Option<i64>,
@@ -94,14 +96,17 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
     let month_start = local_month_start(now);
     let measured_tokens_today = sum_tokens(&connection, today_start)?;
     let measured_tokens_month = sum_tokens(&connection, month_start)?;
-    let (measured_events_range, measured_tokens_range, value_micros, priced_events_range, priced_tokens_range) = connection.query_row(
+    let (measured_events_range, measured_tokens_range, value_micros, priced_events_range,
+        priced_tokens_range, valued_events_range) = connection.query_row(
         "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_api_value_usd_micros), 0),
                 COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN total_tokens ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN total_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN pricing_status IN ('available', 'partial') THEN 1 ELSE 0 END), 0)
          FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
            AND superseded_by_event_id IS NULL",
         [start.to_rfc3339()],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?)),
     )?;
     let activity_minutes_range: i64 = connection.query_row(
         "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only'
@@ -117,7 +122,7 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         .sum::<i64>();
     let pricing_complete =
         measured_events_range > 0 && priced_events_range == measured_events_range;
-    let estimated_api_value_usd_micros = (priced_events_range > 0).then_some(value_micros);
+    let estimated_api_value_usd_micros = (valued_events_range > 0).then_some(value_micros);
     let total = measured_tokens_range.max(1);
 
     Ok(DashboardSnapshot {
@@ -195,6 +200,8 @@ fn normalized_sources(scan: &ScanReport) -> Vec<SourceScanResult> {
         measured_sessions: 0,
         measured_turns: 0,
         measured_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         native_cost_usd_ticks: None,
         last_scan_at: Utc::now(),
         last_usage_at: None,
@@ -304,7 +311,8 @@ fn activity(
 ) -> Result<Vec<ActivityItem>> {
     let mut statement = connection.prepare(
         "SELECT u.id, u.provider, u.source, u.occurred_at, u.model, u.project_name, u.total_tokens,
-                u.input_tokens, u.cached_input_tokens, u.cache_write_tokens, u.output_tokens,
+                u.input_tokens, u.cached_input_tokens, u.cache_write_tokens,
+                u.cache_write_5m_tokens, u.cache_write_1h_tokens, u.output_tokens,
                 u.reasoning_tokens, u.native_cost_usd_ticks, u.estimated_api_value_usd_micros,
                 u.measurement_kind, u.device_id, d.friendly_name
          FROM usage_events u JOIN devices d ON d.id = u.device_id
@@ -333,13 +341,15 @@ fn activity(
             input_tokens: row.get(7)?,
             cached_input_tokens: row.get(8)?,
             cache_write_tokens: row.get(9)?,
-            output_tokens: row.get(10)?,
-            reasoning_tokens: row.get(11)?,
-            native_cost_usd_ticks: row.get(12)?,
-            estimated_api_value_usd_micros: row.get(13)?,
-            measurement_kind: row.get(14)?,
-            device_id: row.get(15)?,
-            device_name: row.get(16)?,
+            cache_write_5m_tokens: row.get(10)?,
+            cache_write_1h_tokens: row.get(11)?,
+            output_tokens: row.get(12)?,
+            reasoning_tokens: row.get(13)?,
+            native_cost_usd_ticks: row.get(14)?,
+            estimated_api_value_usd_micros: row.get(15)?,
+            measurement_kind: row.get(16)?,
+            device_id: row.get(17)?,
+            device_name: row.get(18)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -488,6 +498,8 @@ mod tests {
                 input_tokens: 1_000_000,
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
                 output_tokens: 100_000,
                 reasoning_tokens: 20_000,
                 total_tokens: 1_100_000,
@@ -542,6 +554,8 @@ mod tests {
                 input_tokens: 1_000_000,
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
                 output_tokens: 100_000,
                 reasoning_tokens: 20_000,
                 total_tokens: 1_100_000,
@@ -560,6 +574,8 @@ mod tests {
                 input_tokens: 100_000,
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
                 output_tokens: 10_000,
                 reasoning_tokens: 2_000,
                 total_tokens: 110_000,

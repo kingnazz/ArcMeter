@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 const DEFAULT_PARSER_VERSION: i64 = 1;
+const CLAUDE_PARSER_VERSION: i64 = 2;
 const GROK_PARSER_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +31,8 @@ pub struct SourceScanResult {
     pub measured_sessions: i64,
     pub measured_turns: i64,
     pub measured_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     pub native_cost_usd_ticks: Option<i64>,
     pub last_scan_at: DateTime<Utc>,
     pub last_usage_at: Option<DateTime<Utc>>,
@@ -156,6 +159,18 @@ fn scan_provider(
                         None,
                     ));
                 }
+                if specification.provider == "claude"
+                    && let Err(error) = database
+                        .reconcile_claude_events(&output.events, &output.reconciliation_hints)
+                {
+                    persistence_succeeded = false;
+                    diagnostics.push(diagnostic(
+                        "error",
+                        "claude_reconciliation_failed",
+                        &error.to_string(),
+                        None,
+                    ));
+                }
             }
             Err(error) => {
                 persistence_succeeded = false;
@@ -210,6 +225,14 @@ fn scan_provider(
             None,
         ));
     }
+    if specification.provider == "claude" && summary.unreconciled_legacy_records > 0 {
+        diagnostics.push(diagnostic(
+            "warning",
+            "legacy_claude_reconciliation_required",
+            "Legacy Claude measurements remain active because ArcMeter could not map them uniquely to request-level replacements",
+            None,
+        ));
+    }
     let status = if diagnostics.iter().any(|item| item.severity == "error") {
         "error"
     } else if diagnostics.is_empty() {
@@ -228,6 +251,8 @@ fn scan_provider(
         measured_sessions: summary.sessions,
         measured_turns: summary.turns,
         measured_tokens: summary.tokens,
+        cache_read_tokens: summary.cache_read_tokens,
+        cache_write_tokens: summary.cache_write_tokens,
         native_cost_usd_ticks: summary.native_cost_usd_ticks,
         last_scan_at: now,
         last_usage_at: summary.last_usage_at.or(last_usage_at),
@@ -237,10 +262,10 @@ fn scan_provider(
 }
 
 fn parser_version(provider: &str) -> i64 {
-    if provider == "grok" {
-        GROK_PARSER_VERSION
-    } else {
-        DEFAULT_PARSER_VERSION
+    match provider {
+        "claude" => CLAUDE_PARSER_VERSION,
+        "grok" => GROK_PARSER_VERSION,
+        _ => DEFAULT_PARSER_VERSION,
     }
 }
 
@@ -260,6 +285,8 @@ struct ProviderSummary {
     sessions: i64,
     turns: i64,
     tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
     native_cost_usd_ticks: Option<i64>,
     last_usage_at: Option<DateTime<Utc>>,
     unreconciled_legacy_records: i64,
@@ -267,7 +294,8 @@ struct ProviderSummary {
 
 fn provider_summary(database: &Database, provider: &str) -> crate::db::Result<ProviderSummary> {
     let connection = rusqlite::Connection::open(database.path())?;
-    let (records, sessions, turns, tokens, native_cost_usd_ticks, last_usage_at, legacy) =
+    let (records, sessions, turns, tokens, cache_read_tokens, cache_write_tokens,
+        native_cost_usd_ticks, last_usage_at, legacy) =
         connection
             .query_row(
                 "SELECT COUNT(*), COUNT(DISTINCT native_session_id),
@@ -275,9 +303,16 @@ fn provider_summary(database: &Database, provider: &str) -> crate::db::Result<Pr
                       WHEN provider = 'grok' AND native_event_id LIKE 'turn:%:model:%'
                       THEN substr(native_event_id, 1, instr(native_event_id, ':model:') - 1)
                       ELSE id END),
-                    COALESCE(SUM(total_tokens), 0), SUM(native_cost_usd_ticks), MAX(occurred_at),
-                    COALESCE(SUM(CASE WHEN provider = 'grok'
-                      AND native_event_id NOT LIKE 'turn:%:model:%' THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cached_input_tokens), 0),
+                    COALESCE(SUM(cache_write_tokens), 0), SUM(native_cost_usd_ticks), MAX(occurred_at),
+                    COALESCE(SUM(CASE
+                      WHEN provider = 'grok' AND native_event_id NOT LIKE 'turn:%:model:%' THEN 1
+                      WHEN provider = 'claude'
+                        AND native_event_id NOT LIKE 'request:%'
+                        AND native_event_id NOT LIKE 'message:%'
+                        AND native_event_id NOT LIKE 'uuid:%'
+                        AND native_event_id NOT LIKE 'request_fingerprint:%' THEN 1
+                      ELSE 0 END), 0)
              FROM usage_events WHERE provider = ?1 AND measurement_kind = 'measured'
                AND superseded_by_event_id IS NULL",
                 [provider],
@@ -287,9 +322,11 @@ fn provider_summary(database: &Database, provider: &str) -> crate::db::Result<Pr
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             )
@@ -306,6 +343,8 @@ fn provider_summary(database: &Database, provider: &str) -> crate::db::Result<Pr
         sessions,
         turns,
         tokens,
+        cache_read_tokens,
+        cache_write_tokens,
         native_cost_usd_ticks,
         last_usage_at,
         unreconciled_legacy_records: legacy,
@@ -394,9 +433,17 @@ fn codex_roots() -> Vec<PathBuf> {
 }
 
 fn claude_roots() -> Vec<PathBuf> {
-    let mut roots = env_roots("CLAUDE_CONFIG_DIR");
-    if let Some(home) = home_dir() {
+    claude_roots_from(env_path_roots("CLAUDE_CONFIG_DIR"), home_dir())
+}
+
+fn claude_roots_from(config_dirs: Vec<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut roots = config_dirs
+        .into_iter()
+        .map(|root| root.join("projects"))
+        .collect::<Vec<_>>();
+    if let Some(home) = home {
         roots.push(home.join(".claude").join("projects"));
+        roots.push(home.join(".config").join("claude").join("projects"));
     }
     unique_roots(roots)
 }
@@ -427,6 +474,12 @@ fn env_roots(variable: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+fn env_path_roots(variable: &str) -> Vec<PathBuf> {
+    std::env::var_os(variable)
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default()
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -438,7 +491,8 @@ fn unique_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
     roots
         .into_iter()
         .fold(BTreeMap::<String, PathBuf>::new(), |mut output, path| {
-            output.insert(path.to_string_lossy().to_lowercase(), path);
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            output.insert(canonical.to_string_lossy().to_lowercase(), canonical);
             output
         })
         .into_values()
@@ -516,7 +570,7 @@ mod tests {
             CollectorSpec::new(
                 "claude",
                 "Claude Code CLI",
-                vec![source.clone()],
+                vec![source.clone(), source.join(".")],
                 &["jsonl"],
             ),
         );
@@ -531,6 +585,26 @@ mod tests {
         assert_eq!(second.last_usage_at, first.last_usage_at);
         assert_eq!(second.measured_records, first.measured_records);
         assert_eq!(second.measured_tokens, first.measured_tokens);
+        assert_eq!(first.files_seen, 1);
+        assert_eq!(first.measured_records, 9);
+    }
+
+    #[test]
+    fn claude_roots_scan_only_known_project_directories_and_deduplicate() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = temporary.path().join("claude-config");
+        std::fs::create_dir_all(config.join("projects")).unwrap();
+        let roots = claude_roots_from(
+            vec![config.clone(), config.join(".")],
+            Some(temporary.path().join("home")),
+        );
+        assert_eq!(roots.len(), 3);
+        assert!(roots.contains(&config.join("projects").canonicalize().unwrap()));
+        assert!(
+            roots
+                .iter()
+                .all(|root| root.file_name().and_then(|value| value.to_str()) == Some("projects"))
+        );
     }
 
     #[test]

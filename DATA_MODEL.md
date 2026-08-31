@@ -12,7 +12,7 @@
 | `occurredAt` | UTC RFC 3339 event time. |
 | `model` | Provider-reported model when present. |
 | `projectName` | Sanitized basename only. |
-| token fields | Non-negative authoritative counters; cache read/write and reasoning counters may be documented subsets. Explicit provider total wins over derived input + output. |
+| token fields | Non-negative authoritative counters, including generic 5m/1h cache-write detail. Provider documentation defines whether cache counters are included or additive. Explicit provider total wins over a derived value. |
 | `nativeCostUsdTicks` | Optional provider-recorded fixed-point cost in exact 10^-10 USD ticks; never an ArcMeter estimate. |
 | `estimatedApiValueUsdMicros` | Derived estimate, never actual spend. Null when pricing is unavailable. |
 | `pricingStatus` | `available`, `partial`, or `unavailable`. |
@@ -20,6 +20,8 @@
 | `deviceId` | Stable ArcMeter installation UUID. |
 
 Codex reports cached input as a subset of input and reasoning as a subset of output. The pricing engine subtracts cached input before applying the ordinary input rate and does not add reasoning twice when the pricing rule says it is included in output.
+
+Claude reports fresh input, cache reads, cache writes, and output as separate additive counters. `cacheWriteTokens` remains the authoritative aggregate; `cacheWrite5mTokens` and `cacheWrite1hTokens` preserve TTL detail when present. Claude reasoning detail is a subset of output and is never added to total tokens a second time.
 
 ## Local SQLite
 
@@ -46,6 +48,8 @@ Codex's native event identity is its JSONL ordinal inside the native session. Gr
 
 Legacy Grok rows that uniquely match an authoritative completed turn are retained with `supersededByEventId` and excluded from analytics. Ambiguous rows remain active and surface a diagnostic rather than being deleted or silently hidden.
 
+Claude parser version 2 uses request identity before message/UUID identity and carries exact, local-only reconciliation hints for IDs produced by parser version 1. Proven legacy records are retained as superseded; ambiguous rows remain active. These hints contain only deterministic hashes and are not synced as a separate payload.
+
 ## Pricing and value
 
-A pricing rule is versioned by provider, model pattern, effective date, input-context tier, and version. Calculations use uncached input, cached input, output, and an explicit reasoning behavior. If the model/rate/effective mapping is not safe, the event stays `pricing_status = unavailable` and aggregate API-equivalent value/value multiple is hidden. Actual subscription cost is never called API spend.
+A pricing rule is versioned by provider, model pattern, effective date, input-context tier, and version. `inputTokenSemantics` distinguishes providers whose cache counters are included in input from providers whose counters are additive. Calculations can price fresh input, cache reads, 5m writes, 1h writes, output, and an explicit reasoning behavior. Known components may produce a `partial` lower-bound subtotal while an unknown component remains unpriced. If no safe mapping exists, the event stays `pricing_status = unavailable`. Actual subscription cost is never called API spend.

@@ -170,6 +170,8 @@ fn parse_values(
             input_tokens: input,
             cached_input_tokens: cached,
             cache_write_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
             output_tokens,
             reasoning_tokens: reasoning,
             total_tokens: value_i64(

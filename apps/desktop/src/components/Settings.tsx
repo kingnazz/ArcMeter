@@ -128,9 +128,11 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
               <div className="source-setting-title"><strong>{source.label}</strong><span>{source.provider === "claude" ? `${source.detected ? "Detected" : "Not detected"} · CLI telemetry only` : source.detected ? "Detected" : "Not detected"}</span></div>
               <StatusBadge status={source.detected ? source.status : "idle"} />
               <dl>
-                {source.provider === "grok" ? <div><dt>Sessions</dt><dd>{source.measuredSessions.toLocaleString()}</dd></div> : null}
-                <div><dt>{source.provider === "grok" ? "Measured turns" : "Measured events"}</dt><dd>{(source.provider === "grok" ? source.measuredTurns : source.measuredRecords).toLocaleString()}</dd></div>
+                {source.provider === "grok" || source.provider === "claude" ? <div><dt>Sessions</dt><dd>{source.measuredSessions.toLocaleString()}</dd></div> : null}
+                <div><dt>{source.provider === "grok" ? "Measured turns" : source.provider === "claude" ? "Requests" : "Measured events"}</dt><dd>{(source.provider === "grok" ? source.measuredTurns : source.measuredRecords).toLocaleString()}</dd></div>
                 <div><dt>Measured tokens</dt><dd>{formatTokens(source.measuredTokens)}</dd></div>
+                {source.provider === "claude" ? <div><dt>Cache reads</dt><dd>{formatTokens(source.cacheReadTokens)}</dd></div> : null}
+                {source.provider === "claude" ? <div><dt>Cache writes</dt><dd>{formatTokens(source.cacheWriteTokens)}</dd></div> : null}
                 {source.provider === "grok" && source.nativeCostUsdTicks !== null ? <div><dt>Recorded native cost</dt><dd>{formatUsdTicks(source.nativeCostUsdTicks)}</dd></div> : null}
                 <div><dt>{source.provider === "grok" ? "Last activity" : "Last usage"}</dt><dd>{formatRelativeTime(source.lastUsageAt)}</dd></div>
                 <div><dt>Last scan</dt><dd>{formatRelativeTime(source.lastScanAt)}</dd></div>

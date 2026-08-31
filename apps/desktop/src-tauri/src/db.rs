@@ -1,5 +1,5 @@
 use crate::device::{Device, clean_name};
-use crate::domain::UsageEvent;
+use crate::domain::{EventReconciliation, UsageEvent};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,8 @@ const HISTORICAL_PRICING_MIGRATION: &str =
     include_str!("../migrations/0002_historical_pricing.sql");
 const GROK_COMPLETED_TURNS_MIGRATION: &str =
     include_str!("../migrations/0003_grok_completed_turns.sql");
+const CLAUDE_REQUEST_TELEMETRY_MIGRATION: &str =
+    include_str!("../migrations/0004_claude_request_telemetry.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -117,6 +119,17 @@ impl Database {
             )?;
             transaction.commit()?;
         }
+        if current < 4 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(CLAUDE_REQUEST_TELEMETRY_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 4)?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -208,12 +221,12 @@ impl Database {
                 "INSERT INTO usage_events(
                     id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
                     model, project_name, input_tokens, cached_input_tokens, cache_write_tokens,
-                    output_tokens, reasoning_tokens, total_tokens, estimated_api_value_usd_micros,
-                    native_cost_usd_ticks, pricing_status, measurement_kind, device_id, created_at,
-                    updated_at, sync_status
+                    cache_write_5m_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens,
+                    total_tokens, estimated_api_value_usd_micros, native_cost_usd_ticks,
+                    pricing_status, measurement_kind, device_id, created_at, updated_at, sync_status
                  ) VALUES(
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20, ?21, ?21, 'pending'
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?23, 'pending'
                  ) ON CONFLICT(id) DO NOTHING",
             )?;
             for event in events {
@@ -230,6 +243,8 @@ impl Database {
                     event.tokens.input_tokens,
                     event.tokens.cached_input_tokens,
                     event.tokens.cache_write_tokens,
+                    event.tokens.cache_write_5m_tokens,
+                    event.tokens.cache_write_1h_tokens,
                     event.tokens.output_tokens,
                     event.tokens.reasoning_tokens,
                     event.tokens.total_tokens,
@@ -324,6 +339,106 @@ impl Database {
                     turn.reasoning,
                     turn.total,
                     turn.replacement_id,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(reconciled)
+    }
+
+    /// Retains legacy Claude rows but supersedes one only when its former combined-input
+    /// representation exactly and uniquely matches a request-level replacement.
+    pub fn reconcile_claude_events(
+        &self,
+        events: &[UsageEvent],
+        hints: &[EventReconciliation],
+    ) -> Result<usize> {
+        use std::collections::HashSet;
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut reconciled = 0;
+        let replacements = events
+            .iter()
+            .filter(|event| event.provider == "claude")
+            .map(|event| event.id.as_str())
+            .collect::<HashSet<_>>();
+        for hint in hints.iter().filter(|hint| {
+            hint.legacy_event_id != hint.replacement_event_id
+                && replacements.contains(hint.replacement_event_id.as_str())
+        }) {
+            reconciled += transaction.execute(
+                "UPDATE usage_events SET superseded_by_event_id = ?2, updated_at = ?3,
+                        sync_status = 'pending'
+                 WHERE id = ?1 AND provider = 'claude' AND source = 'claude_code'
+                   AND superseded_by_event_id IS NULL",
+                params![
+                    hint.legacy_event_id,
+                    hint.replacement_event_id,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+        }
+        for event in events.iter().filter(|event| event.provider == "claude") {
+            let legacy_input = event
+                .tokens
+                .input_tokens
+                .saturating_add(event.tokens.cached_input_tokens)
+                .saturating_add(event.tokens.cache_write_tokens);
+            let occurred_at = event.occurred_at.to_rfc3339();
+            let candidates: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM usage_events
+                 WHERE provider = 'claude' AND source = 'claude_code'
+                   AND superseded_by_event_id IS NULL AND id <> ?1
+                   AND native_event_id NOT LIKE 'request:%'
+                   AND native_event_id NOT LIKE 'message:%'
+                   AND native_event_id NOT LIKE 'uuid:%'
+                   AND native_event_id NOT LIKE 'request_fingerprint:%'
+                   AND native_session_id = ?2 AND occurred_at = ?3 AND model IS ?4
+                   AND input_tokens = ?5 AND cached_input_tokens = ?6
+                   AND cache_write_tokens = 0 AND cache_write_5m_tokens = 0
+                   AND cache_write_1h_tokens = 0 AND output_tokens = ?7
+                   AND reasoning_tokens = 0 AND total_tokens = ?8",
+                params![
+                    event.id,
+                    event.native_session_id,
+                    occurred_at,
+                    event.model,
+                    legacy_input,
+                    event.tokens.cached_input_tokens,
+                    event.tokens.output_tokens,
+                    event.tokens.total_tokens,
+                ],
+                |row| row.get(0),
+            )?;
+            if candidates != 1 {
+                continue;
+            }
+            reconciled += transaction.execute(
+                "UPDATE usage_events SET superseded_by_event_id = ?9, updated_at = ?10,
+                        sync_status = 'pending'
+                 WHERE provider = 'claude' AND source = 'claude_code'
+                   AND superseded_by_event_id IS NULL AND id <> ?1
+                   AND native_event_id NOT LIKE 'request:%'
+                   AND native_event_id NOT LIKE 'message:%'
+                   AND native_event_id NOT LIKE 'uuid:%'
+                   AND native_event_id NOT LIKE 'request_fingerprint:%'
+                   AND native_session_id = ?2 AND occurred_at = ?3 AND model IS ?4
+                   AND input_tokens = ?5 AND cached_input_tokens = ?6
+                   AND cache_write_tokens = 0 AND cache_write_5m_tokens = 0
+                   AND cache_write_1h_tokens = 0 AND output_tokens = ?7
+                   AND reasoning_tokens = 0 AND total_tokens = ?8",
+                params![
+                    event.id,
+                    event.native_session_id,
+                    occurred_at,
+                    event.model,
+                    legacy_input,
+                    event.tokens.cached_input_tokens,
+                    event.tokens.output_tokens,
+                    event.tokens.total_tokens,
+                    event.id,
                     Utc::now().to_rfc3339(),
                 ],
             )?;
@@ -574,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn grok_schema_migration_preserves_v2_usage_rows() {
+    fn shared_schema_migrations_preserve_v2_usage_rows() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("upgrade.db");
         let connection = Connection::open(&path).unwrap();
@@ -606,9 +721,10 @@ mod tests {
 
         let database = Database::open(&path).unwrap();
         let connection = Connection::open(database.path()).unwrap();
-        let preserved: (i64, i64, Option<i64>, Option<String>, i64) = connection
+        let preserved: (i64, i64, i64, i64, Option<i64>, Option<String>, i64) = connection
             .query_row(
-                "SELECT COUNT(*), cache_write_tokens, native_cost_usd_ticks,
+                "SELECT COUNT(*), cache_write_tokens, cache_write_5m_tokens,
+                   cache_write_1h_tokens, native_cost_usd_ticks,
                    superseded_by_event_id, (SELECT user_version FROM pragma_user_version)
                  FROM usage_events",
                 [],
@@ -619,11 +735,25 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
             .unwrap();
-        assert_eq!(preserved, (1, 0, None, None, 3));
+        assert_eq!(preserved, (1, 0, 0, 0, None, None, 4));
+        let claude_pricing: (String, Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT input_token_semantics, cache_write_5m_usd_micros_per_million,
+                   cache_write_1h_usd_micros_per_million
+                 FROM pricing WHERE provider = 'claude' LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(claude_pricing.0, "cache_additive");
+        assert!(claude_pricing.1.is_some());
+        assert!(claude_pricing.2.is_some());
     }
 
     #[test]
@@ -668,6 +798,8 @@ mod tests {
             input_tokens: 100,
             cached_input_tokens: 40,
             cache_write_tokens: 10,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
             output_tokens: 20,
             reasoning_tokens: 8,
             total_tokens: 120,
@@ -717,6 +849,129 @@ mod tests {
     }
 
     #[test]
+    fn exact_legacy_claude_measurement_is_superseded_without_deletion() {
+        let (_directory, database, device) = database();
+        let occurred_at = Utc::now();
+        let legacy = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session",
+            "legacy-uuid",
+            occurred_at,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 150,
+                cached_input_tokens: 40,
+                output_tokens: 20,
+                total_tokens: 170,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        database.insert_usage_events(&[legacy]).unwrap();
+        let replacement = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session",
+            "request:req-1",
+            occurred_at,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 40,
+                cache_write_tokens: 10,
+                cache_write_5m_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 170,
+                ..Default::default()
+            },
+            device.id,
+        );
+        database
+            .insert_usage_events(std::slice::from_ref(&replacement))
+            .unwrap();
+        assert_eq!(
+            database
+                .reconcile_claude_events(&[replacement], &[])
+                .unwrap(),
+            1
+        );
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 170));
+
+        let connection = Connection::open(database.path()).unwrap();
+        let (all_rows, superseded): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COUNT(superseded_by_event_id) FROM usage_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((all_rows, superseded), (2, 1));
+    }
+
+    #[test]
+    fn claude_identity_hints_supersede_every_proven_record_for_one_request() {
+        let (_directory, database, device) = database();
+        let occurred_at = Utc::now();
+        let mut legacy_ids = Vec::new();
+        for (native_id, input) in [("old-uuid-1", 10), ("old-uuid-2", 20)] {
+            let legacy = UsageEvent::measured(
+                "claude",
+                "claude_code",
+                "session",
+                native_id,
+                occurred_at,
+                Some("claude-sonnet-5-20260801".into()),
+                Some("ArcMeter".into()),
+                TokenCounts {
+                    input_tokens: input,
+                    output_tokens: 2,
+                    total_tokens: input + 2,
+                    ..Default::default()
+                },
+                device.id.clone(),
+            );
+            legacy_ids.push(legacy.id.clone());
+            database.insert_usage_events(&[legacy]).unwrap();
+        }
+        let replacement = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session",
+            "request:req-1",
+            occurred_at,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 20,
+                output_tokens: 2,
+                total_tokens: 22,
+                ..Default::default()
+            },
+            device.id,
+        );
+        database
+            .insert_usage_events(std::slice::from_ref(&replacement))
+            .unwrap();
+        let hints = legacy_ids
+            .into_iter()
+            .map(|legacy_event_id| EventReconciliation {
+                legacy_event_id,
+                replacement_event_id: replacement.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            database
+                .reconcile_claude_events(&[replacement], &hints)
+                .unwrap(),
+            2
+        );
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 22));
+    }
+
+    #[test]
     #[ignore = "opens the explicitly selected launched-app database for a production smoke check"]
     fn launched_database_integrity_smoke_check() {
         let path = std::env::var("ARCMETER_TEST_DATABASE_PATH")
@@ -760,6 +1015,6 @@ mod tests {
         assert_eq!(summary.3, 1);
         assert!(summary.4 >= 4);
         assert!(summary.5 >= 20);
-        assert_eq!(summary.6, 3);
+        assert_eq!(summary.6, 4);
     }
 }

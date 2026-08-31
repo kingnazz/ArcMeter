@@ -38,6 +38,8 @@ export interface ActivityItem {
   inputTokens: number;
   cachedInputTokens: number;
   cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   nativeCostUsdTicks: number | null;
@@ -72,6 +74,8 @@ export interface SourceScanResult {
   measuredSessions: number;
   measuredTurns: number;
   measuredTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   nativeCostUsdTicks: number | null;
   lastScanAt: string;
   lastUsageAt: string | null;

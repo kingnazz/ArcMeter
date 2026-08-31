@@ -14,10 +14,20 @@ pub struct PricingRule {
     pub max_input_tokens: Option<i64>,
     pub input_usd_micros_per_million: i64,
     pub cached_input_usd_micros_per_million: Option<i64>,
+    pub cache_write_5m_usd_micros_per_million: Option<i64>,
+    pub cache_write_1h_usd_micros_per_million: Option<i64>,
+    pub input_token_semantics: InputTokenSemantics,
     pub output_usd_micros_per_million: i64,
     pub reasoning_pricing_behavior: ReasoningPricingBehavior,
     pub reasoning_usd_micros_per_million: Option<i64>,
     pub version: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputTokenSemantics {
+    CacheIncluded,
+    CacheAdditive,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,47 +41,99 @@ pub enum ReasoningPricingBehavior {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PricingResult {
     Available(i64),
+    Partial(i64),
     Unavailable,
 }
 
 pub fn calculate_api_value(tokens: &TokenCounts, rule: &PricingRule) -> PricingResult {
-    if tokens.input_tokens < rule.min_input_tokens
+    let pricing_input_tokens = match rule.input_token_semantics {
+        InputTokenSemantics::CacheIncluded => tokens.input_tokens,
+        InputTokenSemantics::CacheAdditive => tokens
+            .input_tokens
+            .saturating_add(tokens.cached_input_tokens)
+            .saturating_add(tokens.cache_write_tokens),
+    };
+    if pricing_input_tokens < rule.min_input_tokens
         || rule
             .max_input_tokens
-            .is_some_and(|maximum| tokens.input_tokens > maximum)
+            .is_some_and(|maximum| pricing_input_tokens > maximum)
     {
         return PricingResult::Unavailable;
     }
-    if rule.reasoning_pricing_behavior == ReasoningPricingBehavior::Unavailable
-        && tokens.reasoning_tokens > 0
-    {
-        return PricingResult::Unavailable;
-    }
-    let uncached_input = tokens
-        .input_tokens
-        .saturating_sub(tokens.cached_input_tokens)
-        .max(0);
-    let cached_rate = match (
+    let fresh_input = match rule.input_token_semantics {
+        InputTokenSemantics::CacheIncluded => tokens
+            .input_tokens
+            .saturating_sub(tokens.cached_input_tokens)
+            .saturating_sub(tokens.cache_write_tokens)
+            .max(0),
+        InputTokenSemantics::CacheAdditive => tokens.input_tokens,
+    };
+    let mut total = priced(fresh_input, rule.input_usd_micros_per_million).saturating_add(priced(
+        tokens.output_tokens,
+        rule.output_usd_micros_per_million,
+    ));
+    let mut complete = true;
+    add_optional_component(
+        &mut total,
+        &mut complete,
         tokens.cached_input_tokens,
         rule.cached_input_usd_micros_per_million,
-    ) {
-        (0, _) => 0,
-        (_, Some(rate)) => rate,
-        (_, None) => return PricingResult::Unavailable,
-    };
-    let mut total = priced(uncached_input, rule.input_usd_micros_per_million)
-        .saturating_add(priced(tokens.cached_input_tokens, cached_rate))
-        .saturating_add(priced(
-            tokens.output_tokens,
-            rule.output_usd_micros_per_million,
-        ));
-    if rule.reasoning_pricing_behavior == ReasoningPricingBehavior::Separate {
-        let Some(rate) = rule.reasoning_usd_micros_per_million else {
-            return PricingResult::Unavailable;
-        };
-        total = total.saturating_add(priced(tokens.reasoning_tokens, rate));
+    );
+
+    let cache_write_5m = tokens.cache_write_5m_tokens.min(tokens.cache_write_tokens);
+    let cache_write_1h = tokens
+        .cache_write_1h_tokens
+        .min(tokens.cache_write_tokens.saturating_sub(cache_write_5m));
+    add_optional_component(
+        &mut total,
+        &mut complete,
+        cache_write_5m,
+        rule.cache_write_5m_usd_micros_per_million,
+    );
+    add_optional_component(
+        &mut total,
+        &mut complete,
+        cache_write_1h,
+        rule.cache_write_1h_usd_micros_per_million,
+    );
+    if tokens
+        .cache_write_tokens
+        .saturating_sub(cache_write_5m)
+        .saturating_sub(cache_write_1h)
+        > 0
+    {
+        // An aggregate-only cache write has no defensible TTL-specific rate.
+        complete = false;
     }
-    PricingResult::Available(total)
+
+    if rule.reasoning_pricing_behavior == ReasoningPricingBehavior::Separate {
+        add_optional_component(
+            &mut total,
+            &mut complete,
+            tokens.reasoning_tokens,
+            rule.reasoning_usd_micros_per_million,
+        );
+    } else if rule.reasoning_pricing_behavior == ReasoningPricingBehavior::Unavailable
+        && tokens.reasoning_tokens > 0
+    {
+        complete = false;
+    }
+    if complete {
+        PricingResult::Available(total)
+    } else {
+        PricingResult::Partial(total)
+    }
+}
+
+fn add_optional_component(total: &mut i64, complete: &mut bool, tokens: i64, rate: Option<i64>) {
+    if tokens <= 0 {
+        return;
+    }
+    if let Some(rate) = rate {
+        *total = total.saturating_add(priced(tokens, rate));
+    } else {
+        *complete = false;
+    }
 }
 
 /// Revalues measured events from versioned, local pricing metadata. Unknown models and
@@ -81,7 +143,8 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
     let events = {
         let mut statement = connection.prepare(
             "SELECT id, provider, model, occurred_at, input_tokens, cached_input_tokens,
-                    cache_write_tokens, output_tokens, reasoning_tokens, total_tokens,
+                    cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+                    output_tokens, reasoning_tokens, total_tokens,
                     estimated_api_value_usd_micros, pricing_status
              FROM usage_events
              WHERE measurement_kind = 'measured' AND model IS NOT NULL
@@ -97,12 +160,14 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
                     input_tokens: row.get(4)?,
                     cached_input_tokens: row.get(5)?,
                     cache_write_tokens: row.get(6)?,
-                    output_tokens: row.get(7)?,
-                    reasoning_tokens: row.get(8)?,
-                    total_tokens: row.get(9)?,
+                    cache_write_5m_tokens: row.get(7)?,
+                    cache_write_1h_tokens: row.get(8)?,
+                    output_tokens: row.get(9)?,
+                    reasoning_tokens: row.get(10)?,
+                    total_tokens: row.get(11)?,
                 },
-                previous_value: row.get(10)?,
-                previous_status: row.get(11)?,
+                previous_value: row.get(12)?,
+                previous_status: row.get(13)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()?
@@ -116,13 +181,14 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
             &event.provider,
             &event.model,
             &event.occurred_at,
-            event.tokens.input_tokens,
+            &event.tokens,
         )?;
         let (value, status) = match rule
             .as_ref()
             .map(|rule| calculate_api_value(&event.tokens, rule))
         {
             Some(PricingResult::Available(value)) => (Some(value), "available"),
+            Some(PricingResult::Partial(value)) => (Some(value), "partial"),
             _ => (None, "unavailable"),
         };
         if event.previous_value == value && event.previous_status == status {
@@ -156,21 +222,21 @@ fn find_rule(
     provider: &str,
     model: &str,
     occurred_at: &str,
-    input_tokens: i64,
+    tokens: &TokenCounts,
 ) -> DatabaseResult<Option<PricingRule>> {
     let mut statement = connection.prepare(
         "SELECT provider, model_pattern, effective_from, min_input_tokens, max_input_tokens,
                 input_usd_micros_per_million, cached_input_usd_micros_per_million,
+                cache_write_5m_usd_micros_per_million,
+                cache_write_1h_usd_micros_per_million, input_token_semantics,
                 output_usd_micros_per_million, reasoning_pricing_behavior,
                 reasoning_usd_micros_per_million, version
          FROM pricing
          WHERE provider = ?1 AND effective_from <= ?3
-           AND min_input_tokens <= ?4
-           AND (max_input_tokens IS NULL OR max_input_tokens >= ?4)
          ORDER BY (model_pattern = ?2) DESC, length(model_pattern) DESC,
                   effective_from DESC, min_input_tokens DESC, version DESC",
     )?;
-    let mut rows = statement.query(params![provider, model, occurred_at, input_tokens.max(0)])?;
+    let mut rows = statement.query(params![provider, model, occurred_at])?;
     while let Some(row) = rows.next()? {
         let model_pattern: String = row.get(1)?;
         let model_matches = model_pattern
@@ -183,7 +249,31 @@ fn find_rule(
         let effective_from = DateTime::parse_from_rfc3339(&effective_from)
             .map(|date| date.with_timezone(&Utc))
             .map_err(|error| DatabaseError::Invalid(format!("invalid pricing date: {error}")))?;
-        let reasoning_behavior: String = row.get(8)?;
+        let input_semantics: String = row.get(9)?;
+        let input_token_semantics = match input_semantics.as_str() {
+            "cache_included" => InputTokenSemantics::CacheIncluded,
+            "cache_additive" => InputTokenSemantics::CacheAdditive,
+            value => {
+                return Err(DatabaseError::Invalid(format!(
+                    "invalid input token semantics: {value}"
+                )));
+            }
+        };
+        let pricing_input_tokens = match input_token_semantics {
+            InputTokenSemantics::CacheIncluded => tokens.input_tokens,
+            InputTokenSemantics::CacheAdditive => tokens
+                .input_tokens
+                .saturating_add(tokens.cached_input_tokens)
+                .saturating_add(tokens.cache_write_tokens),
+        };
+        let min_input_tokens: i64 = row.get(3)?;
+        let max_input_tokens: Option<i64> = row.get(4)?;
+        if pricing_input_tokens < min_input_tokens
+            || max_input_tokens.is_some_and(|maximum| pricing_input_tokens > maximum)
+        {
+            continue;
+        }
+        let reasoning_behavior: String = row.get(11)?;
         let reasoning_pricing_behavior = match reasoning_behavior.as_str() {
             "included_in_output" => ReasoningPricingBehavior::IncludedInOutput,
             "separate" => ReasoningPricingBehavior::Separate,
@@ -198,14 +288,17 @@ fn find_rule(
             provider: row.get(0)?,
             model_pattern,
             effective_from,
-            min_input_tokens: row.get(3)?,
-            max_input_tokens: row.get(4)?,
+            min_input_tokens,
+            max_input_tokens,
             input_usd_micros_per_million: row.get(5)?,
             cached_input_usd_micros_per_million: row.get(6)?,
-            output_usd_micros_per_million: row.get(7)?,
+            cache_write_5m_usd_micros_per_million: row.get(7)?,
+            cache_write_1h_usd_micros_per_million: row.get(8)?,
+            input_token_semantics,
+            output_usd_micros_per_million: row.get(10)?,
             reasoning_pricing_behavior,
-            reasoning_usd_micros_per_million: row.get(9)?,
-            version: row.get(10)?,
+            reasoning_usd_micros_per_million: row.get(12)?,
+            version: row.get(13)?,
         }));
     }
     Ok(None)
@@ -230,6 +323,9 @@ mod tests {
             max_input_tokens: None,
             input_usd_micros_per_million: 1_000_000,
             cached_input_usd_micros_per_million: Some(250_000),
+            cache_write_5m_usd_micros_per_million: Some(1_250_000),
+            cache_write_1h_usd_micros_per_million: Some(2_000_000),
+            input_token_semantics: InputTokenSemantics::CacheIncluded,
             output_usd_micros_per_million: 4_000_000,
             reasoning_pricing_behavior: ReasoningPricingBehavior::IncludedInOutput,
             reasoning_usd_micros_per_million: None,
@@ -243,6 +339,8 @@ mod tests {
             input_tokens: 1_000_000,
             cached_input_tokens: 400_000,
             cache_write_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
             output_tokens: 100_000,
             reasoning_tokens: 20_000,
             total_tokens: 1_100_000,
@@ -254,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_cache_or_reasoning_rates_do_not_guess() {
+    fn unknown_cache_or_reasoning_components_return_a_safe_partial_value() {
         let mut no_cache = rule();
         no_cache.cached_input_usd_micros_per_million = None;
         assert_eq!(
@@ -266,7 +364,7 @@ mod tests {
                 },
                 &no_cache
             ),
-            PricingResult::Unavailable
+            PricingResult::Partial(0)
         );
         let mut no_reasoning = rule();
         no_reasoning.reasoning_pricing_behavior = ReasoningPricingBehavior::Unavailable;
@@ -278,7 +376,45 @@ mod tests {
                 },
                 &no_reasoning
             ),
-            PricingResult::Unavailable
+            PricingResult::Partial(0)
+        );
+    }
+
+    #[test]
+    fn additive_claude_components_are_each_priced_once() {
+        let mut claude = rule();
+        claude.input_token_semantics = InputTokenSemantics::CacheAdditive;
+        let tokens = TokenCounts {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 1_000_000,
+            cache_write_tokens: 2_000_000,
+            cache_write_5m_tokens: 1_000_000,
+            cache_write_1h_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            reasoning_tokens: 100_000,
+            total_tokens: 5_000_000,
+        };
+        assert_eq!(
+            calculate_api_value(&tokens, &claude),
+            PricingResult::Available(8_500_000)
+        );
+    }
+
+    #[test]
+    fn aggregate_only_cache_write_is_not_assigned_a_guessed_ttl() {
+        let mut claude = rule();
+        claude.input_token_semantics = InputTokenSemantics::CacheAdditive;
+        assert_eq!(
+            calculate_api_value(
+                &TokenCounts {
+                    input_tokens: 1_000_000,
+                    cache_write_tokens: 1_000_000,
+                    total_tokens: 2_000_000,
+                    ..Default::default()
+                },
+                &claude
+            ),
+            PricingResult::Partial(1_000_000)
         );
     }
 
@@ -308,12 +444,61 @@ mod tests {
             "codex",
             "gpt-5.6-sol",
             &Utc::now().to_rfc3339(),
-            1_000_000,
+            &TokenCounts {
+                input_tokens: 1_000_000,
+                ..Default::default()
+            },
         )
         .unwrap()
         .expect("a long-context GPT-5.6 Sol rule");
         assert_eq!(rule.min_input_tokens, 272_001);
         assert_eq!(rule.input_usd_micros_per_million, 8_000_000);
+    }
+
+    #[test]
+    fn seeded_claude_pricing_uses_additive_cache_rates_and_safe_context_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("claude-pricing.db")).unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        let sonnet = find_rule(
+            &connection,
+            "claude",
+            "claude-sonnet-5-20260801",
+            "2026-08-29T00:00:00Z",
+            &TokenCounts {
+                input_tokens: 100_000,
+                cached_input_tokens: 50_000,
+                cache_write_tokens: 25_000,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .expect("a Claude Sonnet 5 rule");
+        assert_eq!(
+            sonnet.input_token_semantics,
+            InputTokenSemantics::CacheAdditive
+        );
+        assert_eq!(
+            sonnet.cache_write_5m_usd_micros_per_million,
+            Some(2_500_000)
+        );
+        assert_eq!(
+            sonnet.cache_write_1h_usd_micros_per_million,
+            Some(4_000_000)
+        );
+
+        let haiku_over_limit = find_rule(
+            &connection,
+            "claude",
+            "claude-haiku-4-5-20251001",
+            "2026-08-29T00:00:00Z",
+            &TokenCounts {
+                input_tokens: 200_001,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(haiku_over_limit.is_none());
     }
 
     #[test]
@@ -327,7 +512,10 @@ mod tests {
             "codex",
             "gpt-5.5-2026-04-23",
             "2026-05-01T00:00:00Z",
-            100_000,
+            &TokenCounts {
+                input_tokens: 100_000,
+                ..Default::default()
+            },
         )
         .unwrap()
         .expect("a GPT-5.5 launch-era rule");
@@ -339,7 +527,10 @@ mod tests {
             "codex",
             "gpt-5.6-sol",
             "2026-08-20T00:00:00Z",
-            100_000,
+            &TokenCounts {
+                input_tokens: 100_000,
+                ..Default::default()
+            },
         )
         .unwrap()
         .expect("a pre-promotion GPT-5.6 Sol rule");
@@ -348,7 +539,10 @@ mod tests {
             "codex",
             "gpt-5.6-sol",
             "2026-08-28T00:00:00Z",
-            100_000,
+            &TokenCounts {
+                input_tokens: 100_000,
+                ..Default::default()
+            },
         )
         .unwrap()
         .expect("a promotional GPT-5.6 Sol rule");

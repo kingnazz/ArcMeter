@@ -48,6 +48,8 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
       measuredSessions: 0,
       measuredTurns: 0,
       measuredTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       nativeCostUsdTicks: null,
       lastScanAt: new Date().toISOString(),
       lastUsageAt: null,

@@ -113,6 +113,8 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
                     input_tokens: value_i64(usage.get("input_tokens")),
                     cached_input_tokens: value_i64(usage.get("cached_input_tokens")),
                     cache_write_tokens: 0,
+                    cache_write_5m_tokens: 0,
+                    cache_write_1h_tokens: 0,
                     output_tokens: value_i64(usage.get("output_tokens")),
                     reasoning_tokens: value_i64(usage.get("reasoning_output_tokens")),
                     total_tokens: value_i64(usage.get("total_tokens")),

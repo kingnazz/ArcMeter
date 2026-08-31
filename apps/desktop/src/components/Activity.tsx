@@ -78,11 +78,13 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
                       {expanded === item.id ? (
                         <div className="token-detail">
                           {item.measurementKind === "activity_only" ? <div className="activity-only-detail"><span>Privacy-safe signal</span><strong>One foreground minute; no URL, title, prompt, response, or token count stored.</strong></div> : <>
-                            <TokenPart label={item.provider === "grok" ? "Input (cache included)" : "Input"} value={item.inputTokens} />
-                            <TokenPart label="Cached input" value={item.cachedInputTokens} />
-                            {item.cacheWriteTokens > 0 ? <TokenPart label="Cache write" value={item.cacheWriteTokens} /> : null}
+                            <TokenPart label={item.provider === "grok" ? "Input (cache included)" : item.provider === "claude" ? "Fresh input (cache separate)" : "Input"} value={item.inputTokens} />
+                            <TokenPart label={item.provider === "claude" ? "Cache read" : "Cached input"} value={item.cachedInputTokens} />
+                            {item.cacheWriteTokens > 0 ? <TokenPart label={item.provider === "claude" ? "Cache write total" : "Cache write"} value={item.cacheWriteTokens} /> : null}
+                            {item.cacheWrite5mTokens > 0 ? <TokenPart label="Cache write (5m)" value={item.cacheWrite5mTokens} /> : null}
+                            {item.cacheWrite1hTokens > 0 ? <TokenPart label="Cache write (1h)" value={item.cacheWrite1hTokens} /> : null}
                             <TokenPart label="Output" value={item.outputTokens} />
-                            <TokenPart label={item.provider === "grok" ? "Reasoning (included in output)" : "Reasoning"} value={item.reasoningTokens} />
+                            <TokenPart label={item.provider === "grok" || item.provider === "claude" ? "Reasoning (included in output)" : "Reasoning"} value={item.reasoningTokens} />
                             {item.nativeCostUsdTicks !== null ? <CostPart label="Recorded provider cost" value={formatUsdTicks(item.nativeCostUsdTicks)} /> : null}
                             {item.estimatedApiValueUsdMicros !== null ? <CostPart label="Estimated API-equivalent value" value={formatUsdMicros(item.estimatedApiValueUsdMicros)} /> : null}
                           </>}

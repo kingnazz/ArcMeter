@@ -44,6 +44,8 @@ function snapshot(): DashboardSnapshot {
         measuredSessions: 0,
         measuredTurns: 0,
         measuredTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         nativeCostUsdTicks: null,
         lastScanAt: now,
         lastUsageAt: null,
@@ -61,6 +63,8 @@ function snapshot(): DashboardSnapshot {
         measuredSessions: 0,
         measuredTurns: 0,
         measuredTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
         nativeCostUsdTicks: null,
         lastScanAt: now,
         lastUsageAt: null,
@@ -137,6 +141,8 @@ describe("important product states", () => {
             inputTokens: 1_000,
             cachedInputTokens: 600,
             cacheWriteTokens: 0,
+            cacheWrite5mTokens: 0,
+            cacheWrite1hTokens: 0,
             outputTokens: 250,
             reasoningTokens: 80,
             nativeCostUsdTicks: null,
@@ -169,6 +175,8 @@ describe("important product states", () => {
         inputTokens: 0,
         cachedInputTokens: 0,
         cacheWriteTokens: 0,
+        cacheWrite5mTokens: 0,
+        cacheWrite1hTokens: 0,
         outputTokens: 0,
         reasoningTokens: 0,
         nativeCostUsdTicks: null,
@@ -198,6 +206,8 @@ describe("important product states", () => {
         inputTokens: 100,
         cachedInputTokens: 40,
         cacheWriteTokens: 10,
+        cacheWrite5mTokens: 0,
+        cacheWrite1hTokens: 0,
         outputTokens: 20,
         reasoningTokens: 8,
         nativeCostUsdTicks: 120_000_000,
@@ -216,6 +226,70 @@ describe("important product states", () => {
     expect(screen.queryByText("Estimated API-equivalent value")).not.toBeInTheDocument();
   });
 
+  it("labels Claude additive cache counters without double-counting output reasoning", () => {
+    render(
+      <Activity items={[{
+        id: "d".repeat(64),
+        provider: "claude",
+        source: "claude_code",
+        occurredAt: now,
+        model: "claude-sonnet-5-20260801",
+        projectName: "ArcMeterFixture",
+        totalTokens: 39,
+        inputTokens: 6,
+        cachedInputTokens: 10,
+        cacheWriteTokens: 12,
+        cacheWrite5mTokens: 8,
+        cacheWrite1hTokens: 4,
+        outputTokens: 11,
+        reasoningTokens: 2,
+        nativeCostUsdTicks: null,
+        estimatedApiValueUsdMicros: 101,
+        measurementKind: "measured",
+        deviceId: "device-1",
+        deviceName: "Windows Business Desktop",
+      }]} />,
+    );
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Fresh input (cache separate)")).toBeInTheDocument();
+    expect(screen.getByText("Cache read")).toBeInTheDocument();
+    expect(screen.getByText("Cache write total")).toBeInTheDocument();
+    expect(screen.getByText("Cache write (5m)")).toBeInTheDocument();
+    expect(screen.getByText("Cache write (1h)")).toBeInTheDocument();
+    expect(screen.getByText("Reasoning (included in output)")).toBeInTheDocument();
+  });
+
+  it("shows Claude request and cache diagnostics separately from Claude Desktop", () => {
+    const data = snapshot();
+    data.sources[1] = {
+      ...data.sources[1]!,
+      detected: true,
+      measuredRecords: 1_842,
+      measuredSessions: 37,
+      measuredTokens: 91_600_000,
+      cacheReadTokens: 54_200_000,
+      cacheWriteTokens: 8_700_000,
+      lastUsageAt: now,
+    };
+    render(
+      <Settings
+        data={data}
+        scanning={false}
+        onScan={vi.fn(() => Promise.resolve())}
+        onSync={vi.fn(() => Promise.resolve())}
+        onSaveSubscription={vi.fn(() => Promise.resolve())}
+        onRenameDevice={vi.fn(() => Promise.resolve(data.device))}
+      />,
+    );
+    const card = screen.getByText("Claude Code CLI").closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText("Sessions").nextElementSibling).toHaveTextContent("37");
+    expect(within(card!).getByText("Requests").nextElementSibling).toHaveTextContent("1,842");
+    expect(within(card!).getByText("Cache reads").nextElementSibling).toHaveTextContent("54.2M");
+    expect(within(card!).getByText("Cache writes").nextElementSibling).toHaveTextContent("8.7M");
+    expect(screen.getByText("Claude Desktop")).toBeInTheDocument();
+  });
+
   it("shows Grok session, turn, token, and native-cost diagnostics", () => {
     const data = snapshot();
     data.sources.push({
@@ -229,6 +303,8 @@ describe("important product states", () => {
       measuredSessions: 2,
       measuredTurns: 4,
       measuredTokens: 460,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 20,
       nativeCostUsdTicks: 270_000_000,
       lastScanAt: now,
       lastUsageAt: now,

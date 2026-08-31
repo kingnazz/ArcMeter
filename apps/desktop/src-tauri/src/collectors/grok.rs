@@ -261,6 +261,8 @@ fn parse_tokens(usage: &Value) -> TokenCounts {
                 "cache_creation_prompt_tokens",
             ],
         ),
+        cache_write_5m_tokens: 0,
+        cache_write_1h_tokens: 0,
         output_tokens: output,
         reasoning_tokens: first_i64(usage, &["reasoningTokens", "reasoning_tokens"]),
         total_tokens: first_i64(usage, &["totalTokens", "total_tokens"]),
