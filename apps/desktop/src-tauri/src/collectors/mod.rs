@@ -14,7 +14,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-pub const PARSER_VERSION: i64 = 1;
+const DEFAULT_PARSER_VERSION: i64 = 1;
+const GROK_PARSER_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +27,10 @@ pub struct SourceScanResult {
     pub records_seen: usize,
     pub records_inserted: usize,
     pub measured_records: i64,
+    pub measured_sessions: i64,
+    pub measured_turns: i64,
     pub measured_tokens: i64,
+    pub native_cost_usd_ticks: Option<i64>,
     pub last_scan_at: DateTime<Utc>,
     pub last_usage_at: Option<DateTime<Utc>>,
     pub status: String,
@@ -44,7 +48,7 @@ pub fn scan_all(database: &Database, device_id: &str) -> ScanReport {
     let specifications = [
         CollectorSpec::new("codex", "Codex", codex_roots(), &["jsonl"]),
         CollectorSpec::new("claude", "Claude Code CLI", claude_roots(), &["jsonl"]),
-        CollectorSpec::new("grok", "Grok Build", grok_roots(), &["jsonl", "json"]),
+        CollectorSpec::new("grok", "Grok Build", grok_roots(), &["jsonl"]),
         CollectorSpec::new("gemini", "Gemini CLI", gemini_roots(), &["jsonl", "json"]),
     ];
 
@@ -87,7 +91,12 @@ fn scan_provider(
     specification: CollectorSpec,
 ) -> SourceScanResult {
     let now = Utc::now();
-    let files = discover_files(&specification.roots, specification.extensions);
+    let parser_version = parser_version(specification.provider);
+    let files = if specification.provider == "grok" {
+        discover_grok_files(&specification.roots)
+    } else {
+        discover_files(&specification.roots, specification.extensions)
+    };
     let detected = specification.roots.iter().any(|root| root.exists());
     let mut diagnostics = Vec::new();
     let mut inserted = 0;
@@ -120,7 +129,7 @@ fn scan_provider(
             .is_some_and(|state| {
                 state.file_size == file_size
                     && state.modified_at_ms == modified_at_ms
-                    && state.parser_version == PARSER_VERSION
+                    && state.parser_version == parser_version
             });
         if unchanged {
             continue;
@@ -132,29 +141,41 @@ fn scan_provider(
         if let Some(latest) = output.events.iter().map(|event| event.occurred_at).max() {
             last_usage_at = Some(last_usage_at.map_or(latest, |current| current.max(latest)));
         }
+        let mut persistence_succeeded = true;
         match database.insert_usage_events(&output.events) {
-            Ok(count) => inserted += count,
-            Err(error) => diagnostics.push(diagnostic(
-                "error",
-                "database_write_failed",
-                &error.to_string(),
-                None,
-            )),
+            Ok(count) => {
+                inserted += count;
+                if specification.provider == "grok"
+                    && let Err(error) = database.reconcile_grok_events(&output.events)
+                {
+                    persistence_succeeded = false;
+                    diagnostics.push(diagnostic(
+                        "error",
+                        "grok_reconciliation_failed",
+                        &error.to_string(),
+                        None,
+                    ));
+                }
+            }
+            Err(error) => {
+                persistence_succeeded = false;
+                diagnostics.push(diagnostic(
+                    "error",
+                    "database_write_failed",
+                    &error.to_string(),
+                    None,
+                ));
+            }
         }
 
-        let status = if output
-            .diagnostics
-            .iter()
-            .any(|item| item.severity == "error")
-        {
+        let status = if diagnostics.iter().any(|item| item.severity == "error") {
             "error"
-        } else if output.diagnostics.is_empty() {
+        } else if diagnostics.is_empty() {
             "healthy"
         } else {
             "warning"
         };
-        let summary = output
-            .diagnostics
+        let summary = diagnostics
             .first()
             .map(|item| item.message.chars().take(240).collect::<String>());
         let state = CollectorState {
@@ -164,13 +185,13 @@ fn scan_provider(
             file_size,
             modified_at_ms,
             last_processed_offset: file_size,
-            parser_version: PARSER_VERSION,
+            parser_version,
             last_scan_at: now,
             last_usage_at: output.events.iter().map(|event| event.occurred_at).max(),
             status: status.into(),
             diagnostic: summary,
         };
-        if let Err(error) = database.save_collector_state(&state) {
+        if persistence_succeeded && let Err(error) = database.save_collector_state(&state) {
             diagnostics.push(diagnostic(
                 "error",
                 "state_write_failed",
@@ -180,8 +201,15 @@ fn scan_provider(
         }
     }
 
-    let (measured_records, measured_tokens, persisted_last_usage_at) =
-        provider_summary(database, specification.provider).unwrap_or_default();
+    let summary = provider_summary(database, specification.provider).unwrap_or_default();
+    if specification.provider == "grok" && summary.unreconciled_legacy_records > 0 {
+        diagnostics.push(diagnostic(
+            "warning",
+            "legacy_grok_reconciliation_required",
+            "Legacy Grok measurements remain active because ArcMeter could not map them uniquely to completed turns",
+            None,
+        ));
+    }
     let status = if diagnostics.iter().any(|item| item.severity == "error") {
         "error"
     } else if diagnostics.is_empty() {
@@ -196,12 +224,23 @@ fn scan_provider(
         files_seen: files.len(),
         records_seen,
         records_inserted: inserted,
-        measured_records,
-        measured_tokens,
+        measured_records: summary.records,
+        measured_sessions: summary.sessions,
+        measured_turns: summary.turns,
+        measured_tokens: summary.tokens,
+        native_cost_usd_ticks: summary.native_cost_usd_ticks,
         last_scan_at: now,
-        last_usage_at: persisted_last_usage_at.or(last_usage_at),
+        last_usage_at: summary.last_usage_at.or(last_usage_at),
         status: status.into(),
         diagnostics: diagnostics.into_iter().take(20).collect(),
+    }
+}
+
+fn parser_version(provider: &str) -> i64 {
+    if provider == "grok" {
+        GROK_PARSER_VERSION
+    } else {
+        DEFAULT_PARSER_VERSION
     }
 }
 
@@ -215,28 +254,46 @@ fn parse_path(provider: &str, path: &Path, device_id: &str) -> CollectorOutput {
     }
 }
 
-fn provider_summary(
-    database: &Database,
-    provider: &str,
-) -> crate::db::Result<(i64, i64, Option<DateTime<Utc>>)> {
+#[derive(Default)]
+struct ProviderSummary {
+    records: i64,
+    sessions: i64,
+    turns: i64,
+    tokens: i64,
+    native_cost_usd_ticks: Option<i64>,
+    last_usage_at: Option<DateTime<Utc>>,
+    unreconciled_legacy_records: i64,
+}
+
+fn provider_summary(database: &Database, provider: &str) -> crate::db::Result<ProviderSummary> {
     let connection = rusqlite::Connection::open(database.path())?;
-    let (records, tokens, last_usage_at) = connection
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0),
-                    (SELECT occurred_at FROM usage_events
-                     WHERE provider = ?1 AND measurement_kind = 'measured'
-                     ORDER BY occurred_at DESC LIMIT 1)
-             FROM usage_events WHERE provider = ?1 AND measurement_kind = 'measured'",
-            [provider],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )
-        .map_err(DatabaseError::from)?;
+    let (records, sessions, turns, tokens, native_cost_usd_ticks, last_usage_at, legacy) =
+        connection
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT native_session_id),
+                    COUNT(DISTINCT CASE
+                      WHEN provider = 'grok' AND native_event_id LIKE 'turn:%:model:%'
+                      THEN substr(native_event_id, 1, instr(native_event_id, ':model:') - 1)
+                      ELSE id END),
+                    COALESCE(SUM(total_tokens), 0), SUM(native_cost_usd_ticks), MAX(occurred_at),
+                    COALESCE(SUM(CASE WHEN provider = 'grok'
+                      AND native_event_id NOT LIKE 'turn:%:model:%' THEN 1 ELSE 0 END), 0)
+             FROM usage_events WHERE provider = ?1 AND measurement_kind = 'measured'
+               AND superseded_by_event_id IS NULL",
+                [provider],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .map_err(DatabaseError::from)?;
     let last_usage_at = last_usage_at
         .map(|value| {
             DateTime::parse_from_rfc3339(&value)
@@ -244,7 +301,39 @@ fn provider_summary(
                 .map_err(|error| DatabaseError::Invalid(error.to_string()))
         })
         .transpose()?;
-    Ok((records, tokens, last_usage_at))
+    Ok(ProviderSummary {
+        records,
+        sessions,
+        turns,
+        tokens,
+        native_cost_usd_ticks,
+        last_usage_at,
+        unreconciled_legacy_records: legacy,
+    })
+}
+
+fn discover_grok_files(session_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = BTreeMap::<String, PathBuf>::new();
+    for sessions in session_roots.iter().filter(|path| path.is_dir()) {
+        let Ok(projects) = fs::read_dir(sessions) else {
+            continue;
+        };
+        for project in projects.flatten().filter(|entry| entry.path().is_dir()) {
+            let Ok(session_entries) = fs::read_dir(project.path()) else {
+                continue;
+            };
+            for session in session_entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+            {
+                let updates = session.path().join("updates.jsonl");
+                if updates.is_file() {
+                    paths.insert(updates.to_string_lossy().to_lowercase(), updates);
+                }
+            }
+        }
+    }
+    paths.into_values().collect()
 }
 
 fn discover_files(roots: &[PathBuf], extensions: &[&str]) -> Vec<PathBuf> {
@@ -313,12 +402,12 @@ fn claude_roots() -> Vec<PathBuf> {
 }
 
 fn grok_roots() -> Vec<PathBuf> {
-    let mut roots = env_roots("GROK_HOME");
+    let mut roots = env_roots("GROK_HOME")
+        .into_iter()
+        .map(|root| root.join("sessions"))
+        .collect::<Vec<_>>();
     if let Some(home) = home_dir() {
-        roots.push(home.join(".grok"));
-    }
-    if let Ok(app_data) = std::env::var("APPDATA") {
-        roots.push(PathBuf::from(app_data).join("Grok"));
+        roots.push(home.join(".grok").join("sessions"));
     }
     unique_roots(roots)
 }
@@ -442,6 +531,34 @@ mod tests {
         assert_eq!(second.last_usage_at, first.last_usage_at);
         assert_eq!(second.measured_records, first.measured_records);
         assert_eq!(second.measured_tokens, first.measured_tokens);
+    }
+
+    #[test]
+    fn grok_discovery_accepts_only_session_update_streams() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sessions = temporary.path().join("sessions");
+        let valid = sessions.join("encoded-project").join("session-id");
+        std::fs::create_dir_all(&valid).unwrap();
+        std::fs::write(valid.join("updates.jsonl"), "{}\n").unwrap();
+        std::fs::write(valid.join("summary.json"), "{}").unwrap();
+        std::fs::write(sessions.join("unified.jsonl"), "{}\n").unwrap();
+        let unrelated = temporary.path().join("random").join("nested");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(unrelated.join("updates.jsonl"), "{}\n").unwrap();
+
+        let files = discover_grok_files(&[sessions]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].file_name().and_then(|value| value.to_str()),
+            Some("updates.jsonl")
+        );
+        assert_eq!(
+            files[0]
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|value| value.to_str()),
+            Some("session-id")
+        );
     }
 
     #[test]

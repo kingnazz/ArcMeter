@@ -12,7 +12,8 @@
 | `occurredAt` | UTC RFC 3339 event time. |
 | `model` | Provider-reported model when present. |
 | `projectName` | Sanitized basename only. |
-| token fields | Non-negative authoritative counters; explicit provider total wins over derived input + output. |
+| token fields | Non-negative authoritative counters; cache read/write and reasoning counters may be documented subsets. Explicit provider total wins over derived input + output. |
+| `nativeCostUsdTicks` | Optional provider-recorded fixed-point cost in exact 10^-10 USD ticks; never an ArcMeter estimate. |
 | `estimatedApiValueUsdMicros` | Derived estimate, never actual spend. Null when pricing is unavailable. |
 | `pricingStatus` | `available`, `partial`, or `unavailable`. |
 | `measurementKind` | `measured`, `estimated`, or `activity_only`. |
@@ -31,7 +32,7 @@ Codex reports cached input as a subset of input and reasoning as a subset of out
 - `app_settings`: allow-listed local preferences and the persistent local device ID.
 - `schema_migrations`: applied migration record.
 
-All monetary integers use exact minor units: subscription prices are USD cents and API-equivalent value is USD micros. Floating point is used only to display a ratio.
+All monetary integers use exact units: subscription prices are USD cents, API-equivalent value is USD micros, and provider-recorded native cost is preserved as 10^-10 USD ticks. Floating point is used only for display.
 
 ## Identity and collision behavior
 
@@ -41,7 +42,9 @@ When a source provides native IDs, identity is:
 sha256(provider + unit-separator + nativeSessionId + unit-separator + nativeEventId)
 ```
 
-Codex's native event identity is its JSONL ordinal inside the native session. Fallback identities hash session, timestamp, model, token counters, and the smallest stable source discriminator. SHA-256 collision risk is negligible; if one occurs, database uniqueness treats the records as one event and diagnostics provide investigation context. ArcMeter never increments a duplicate.
+Codex's native event identity is its JSONL ordinal inside the native session. Grok Build identity hashes session, completed turn, and model so one multi-model turn can produce independently deduplicated child events. Fallback identities hash session, timestamp, model, token counters, and the smallest stable source discriminator. SHA-256 collision risk is negligible; if one occurs, database uniqueness treats the records as one event and diagnostics provide investigation context. ArcMeter never increments a duplicate.
+
+Legacy Grok rows that uniquely match an authoritative completed turn are retained with `supersededByEventId` and excluded from analytics. Ambiguous rows remain active and surface a diagnostic rather than being deleted or silently hidden.
 
 ## Pricing and value
 

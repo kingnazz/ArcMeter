@@ -1,11 +1,13 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DashboardSnapshot } from "../types";
 import { Activity } from "./Activity";
 import { Overview } from "./Overview";
 import { Settings } from "./Settings";
 
 const now = "2026-08-28T07:00:00Z";
+
+afterEach(cleanup);
 
 function snapshot(): DashboardSnapshot {
   return {
@@ -39,7 +41,10 @@ function snapshot(): DashboardSnapshot {
         recordsSeen: 0,
         recordsInserted: 0,
         measuredRecords: 0,
+        measuredSessions: 0,
+        measuredTurns: 0,
         measuredTokens: 0,
+        nativeCostUsdTicks: null,
         lastScanAt: now,
         lastUsageAt: null,
         status: "healthy",
@@ -53,7 +58,10 @@ function snapshot(): DashboardSnapshot {
         recordsSeen: 0,
         recordsInserted: 0,
         measuredRecords: 0,
+        measuredSessions: 0,
+        measuredTurns: 0,
         measuredTokens: 0,
+        nativeCostUsdTicks: null,
         lastScanAt: now,
         lastUsageAt: null,
         status: "healthy",
@@ -128,8 +136,11 @@ describe("important product states", () => {
             totalTokens: 1_250,
             inputTokens: 1_000,
             cachedInputTokens: 600,
+            cacheWriteTokens: 0,
             outputTokens: 250,
             reasoningTokens: 80,
+            nativeCostUsdTicks: null,
+            estimatedApiValueUsdMicros: 2_000,
             measurementKind: "measured",
             deviceId: "device-1",
             deviceName: "Windows Business Desktop",
@@ -157,8 +168,11 @@ describe("important product states", () => {
         totalTokens: 0,
         inputTokens: 0,
         cachedInputTokens: 0,
+        cacheWriteTokens: 0,
         outputTokens: 0,
         reasoningTokens: 0,
+        nativeCostUsdTicks: null,
+        estimatedApiValueUsdMicros: null,
         measurementKind: "activity_only",
         deviceId: "device-1",
         deviceName: "Mac",
@@ -169,6 +183,73 @@ describe("important product states", () => {
     expect(screen.getByText("1 min")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { expanded: false }));
     expect(screen.getByText(/no URL, title, prompt, response, or token count stored/i)).toBeInTheDocument();
+  });
+
+  it("labels Grok subset counters and recorded cost without calling it an estimate", () => {
+    render(
+      <Activity items={[{
+        id: "c".repeat(64),
+        provider: "grok",
+        source: "grok_build",
+        occurredAt: now,
+        model: "grok-4.5-build",
+        projectName: "ArcMeter",
+        totalTokens: 120,
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        cacheWriteTokens: 10,
+        outputTokens: 20,
+        reasoningTokens: 8,
+        nativeCostUsdTicks: 120_000_000,
+        estimatedApiValueUsdMicros: null,
+        measurementKind: "measured",
+        deviceId: "device-1",
+        deviceName: "Windows Business Desktop",
+      }]} />,
+    );
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Input (cache included)")).toBeInTheDocument();
+    expect(screen.getByText("Cache write")).toBeInTheDocument();
+    expect(screen.getByText("Reasoning (included in output)")).toBeInTheDocument();
+    expect(screen.getByText("Recorded provider cost")).toBeInTheDocument();
+    expect(screen.getByText("$0.012")).toBeInTheDocument();
+    expect(screen.queryByText("Estimated API-equivalent value")).not.toBeInTheDocument();
+  });
+
+  it("shows Grok session, turn, token, and native-cost diagnostics", () => {
+    const data = snapshot();
+    data.sources.push({
+      provider: "grok",
+      label: "Grok Build",
+      detected: true,
+      filesSeen: 2,
+      recordsSeen: 20,
+      recordsInserted: 4,
+      measuredRecords: 5,
+      measuredSessions: 2,
+      measuredTurns: 4,
+      measuredTokens: 460,
+      nativeCostUsdTicks: 270_000_000,
+      lastScanAt: now,
+      lastUsageAt: now,
+      status: "healthy",
+      diagnostics: [],
+    });
+    render(
+      <Settings
+        data={data}
+        scanning={false}
+        onScan={vi.fn(() => Promise.resolve())}
+        onSync={vi.fn(() => Promise.resolve())}
+        onSaveSubscription={vi.fn(() => Promise.resolve())}
+        onRenameDevice={vi.fn(() => Promise.resolve(data.device))}
+      />,
+    );
+    const card = screen.getByText("Grok Build").closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText("Sessions").nextElementSibling).toHaveTextContent("2");
+    expect(within(card!).getByText("Measured turns").nextElementSibling).toHaveTextContent("4");
+    expect(within(card!).getByText("Recorded native cost").nextElementSibling).toHaveTextContent("$0.027");
   });
 
   it("surfaces collector diagnostics without revealing a filesystem path", () => {

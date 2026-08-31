@@ -37,8 +37,11 @@ export interface ActivityItem {
   totalTokens: number;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
   outputTokens: number;
   reasoningTokens: number;
+  nativeCostUsdTicks: number | null;
+  estimatedApiValueUsdMicros: number | null;
   measurementKind: "measured" | "estimated" | "activity_only";
   deviceId: string;
   deviceName: string;
@@ -66,7 +69,10 @@ export interface SourceScanResult {
   recordsSeen: number;
   recordsInserted: number;
   measuredRecords: number;
+  measuredSessions: number;
+  measuredTurns: number;
   measuredTokens: number;
+  nativeCostUsdTicks: number | null;
   lastScanAt: string;
   lastUsageAt: string | null;
   status: "healthy" | "warning" | "error";

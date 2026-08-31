@@ -10,6 +10,8 @@ use thiserror::Error;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const HISTORICAL_PRICING_MIGRATION: &str =
     include_str!("../migrations/0002_historical_pricing.sql");
+const GROK_COMPLETED_TURNS_MIGRATION: &str =
+    include_str!("../migrations/0003_grok_completed_turns.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -104,6 +106,17 @@ impl Database {
             )?;
             transaction.commit()?;
         }
+        if current < 3 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(GROK_COMPLETED_TURNS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 3)?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, ?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -194,11 +207,13 @@ impl Database {
             let mut statement = transaction.prepare_cached(
                 "INSERT INTO usage_events(
                     id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
-                    model, project_name, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens,
-                    total_tokens, estimated_api_value_usd_micros, pricing_status, measurement_kind, device_id,
-                    created_at, updated_at, sync_status
+                    model, project_name, input_tokens, cached_input_tokens, cache_write_tokens,
+                    output_tokens, reasoning_tokens, total_tokens, estimated_api_value_usd_micros,
+                    native_cost_usd_ticks, pricing_status, measurement_kind, device_id, created_at,
+                    updated_at, sync_status
                  ) VALUES(
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19, 'pending'
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?21, 'pending'
                  ) ON CONFLICT(id) DO NOTHING",
             )?;
             for event in events {
@@ -214,10 +229,12 @@ impl Database {
                     event.project_name,
                     event.tokens.input_tokens,
                     event.tokens.cached_input_tokens,
+                    event.tokens.cache_write_tokens,
                     event.tokens.output_tokens,
                     event.tokens.reasoning_tokens,
                     event.tokens.total_tokens,
                     event.estimated_api_value_usd_micros,
+                    event.native_cost_usd_ticks,
                     event.pricing_status,
                     event.measurement_kind.as_str(),
                     event.device_id,
@@ -229,11 +246,98 @@ impl Database {
         Ok(inserted)
     }
 
+    /// Marks only uniquely matched legacy Grok rows as superseded. The old row remains
+    /// recoverable; analytics ignore it once the authoritative completed-turn event exists.
+    pub fn reconcile_grok_events(&self, events: &[UsageEvent]) -> Result<usize> {
+        use std::collections::BTreeMap;
+
+        #[derive(Default)]
+        struct TurnTotal {
+            session_id: String,
+            occurred_at: String,
+            input: i64,
+            cached: i64,
+            output: i64,
+            reasoning: i64,
+            total: i64,
+            replacement_id: String,
+        }
+
+        let mut turns = BTreeMap::<String, TurnTotal>::new();
+        for event in events.iter().filter(|event| event.provider == "grok") {
+            let Some((turn_id, _)) = event.native_event_id.split_once(":model:") else {
+                continue;
+            };
+            let key = format!("{}\u{1f}{turn_id}", event.native_session_id);
+            let turn = turns.entry(key).or_default();
+            turn.session_id.clone_from(&event.native_session_id);
+            turn.occurred_at = event.occurred_at.to_rfc3339();
+            turn.input = turn.input.saturating_add(event.tokens.input_tokens);
+            turn.cached = turn.cached.saturating_add(event.tokens.cached_input_tokens);
+            turn.output = turn.output.saturating_add(event.tokens.output_tokens);
+            turn.reasoning = turn.reasoning.saturating_add(event.tokens.reasoning_tokens);
+            turn.total = turn.total.saturating_add(event.tokens.total_tokens);
+            turn.replacement_id.clone_from(&event.id);
+        }
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut reconciled = 0;
+        for turn in turns.into_values() {
+            let candidates: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM usage_events
+                 WHERE provider = 'grok' AND source = 'grok_build'
+                   AND superseded_by_event_id IS NULL
+                   AND native_event_id NOT LIKE 'turn:%:model:%'
+                   AND native_session_id = ?1 AND occurred_at = ?2
+                   AND input_tokens = ?3 AND cached_input_tokens = ?4
+                   AND output_tokens = ?5 AND reasoning_tokens = ?6 AND total_tokens = ?7",
+                params![
+                    turn.session_id,
+                    turn.occurred_at,
+                    turn.input,
+                    turn.cached,
+                    turn.output,
+                    turn.reasoning,
+                    turn.total,
+                ],
+                |row| row.get(0),
+            )?;
+            if candidates != 1 {
+                continue;
+            }
+            reconciled += transaction.execute(
+                "UPDATE usage_events SET superseded_by_event_id = ?8, updated_at = ?9,
+                        sync_status = 'pending'
+                 WHERE provider = 'grok' AND source = 'grok_build'
+                   AND superseded_by_event_id IS NULL
+                   AND native_event_id NOT LIKE 'turn:%:model:%'
+                   AND native_session_id = ?1 AND occurred_at = ?2
+                   AND input_tokens = ?3 AND cached_input_tokens = ?4
+                   AND output_tokens = ?5 AND reasoning_tokens = ?6 AND total_tokens = ?7",
+                params![
+                    turn.session_id,
+                    turn.occurred_at,
+                    turn.input,
+                    turn.cached,
+                    turn.output,
+                    turn.reasoning,
+                    turn.total,
+                    turn.replacement_id,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(reconciled)
+    }
+
     #[cfg(test)]
     pub fn event_count_and_tokens(&self) -> Result<(i64, i64)> {
         self.connect()?
             .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0) FROM usage_events WHERE measurement_kind = 'measured'",
+                "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0) FROM usage_events
+                 WHERE measurement_kind = 'measured' AND superseded_by_event_id IS NULL",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -470,6 +574,59 @@ mod tests {
     }
 
     #[test]
+    fn grok_schema_migration_preserves_v2_usage_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("upgrade.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(INITIAL_MIGRATION).unwrap();
+        connection
+            .execute_batch(HISTORICAL_PRICING_MIGRATION)
+            .unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        let timestamp = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO devices(id, friendly_name, os, architecture, app_version, created_at,
+                   last_seen_at, sync_status)
+                 VALUES('device', 'Test device', 'windows', 'x86_64', 'test', ?1, ?1, 'local_only')",
+                [&timestamp],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO usage_events(id, provider, source, source_type, native_session_id,
+                   native_event_id, occurred_at, input_tokens, output_tokens, total_tokens,
+                   pricing_status, measurement_kind, device_id, created_at, updated_at)
+                 VALUES(?1, 'grok', 'grok_build', 'local_cli', 'session', 'legacy', ?2,
+                   10, 2, 12, 'unavailable', 'measured', 'device', ?2, ?2)",
+                params!["a".repeat(64), timestamp],
+            )
+            .unwrap();
+        drop(connection);
+
+        let database = Database::open(&path).unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        let preserved: (i64, i64, Option<i64>, Option<String>, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), cache_write_tokens, native_cost_usd_ticks,
+                   superseded_by_event_id, (SELECT user_version FROM pragma_user_version)
+                 FROM usage_events",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(preserved, (1, 0, None, None, 3));
+    }
+
+    #[test]
     fn repeated_ingestion_is_idempotent() {
         let (_directory, database, device) = database();
         let event = UsageEvent::measured(
@@ -501,6 +658,62 @@ mod tests {
             0
         );
         assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
+    }
+
+    #[test]
+    fn exact_legacy_grok_measurement_is_superseded_without_deletion() {
+        let (_directory, database, device) = database();
+        let occurred_at = Utc::now();
+        let tokens = TokenCounts {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            cache_write_tokens: 10,
+            output_tokens: 20,
+            reasoning_tokens: 8,
+            total_tokens: 120,
+        };
+        let legacy = UsageEvent::measured(
+            "grok",
+            "grok_build",
+            "session",
+            "legacy-turn",
+            occurred_at,
+            Some("grok-4.5-build".into()),
+            Some("ArcMeter".into()),
+            tokens.clone(),
+            device.id.clone(),
+        );
+        database.insert_usage_events(&[legacy]).unwrap();
+        let completed = UsageEvent::measured(
+            "grok",
+            "grok_build",
+            "session",
+            format!("turn:{}:model:{}", "a".repeat(64), "b".repeat(64)),
+            occurred_at,
+            Some("grok-4.5-build".into()),
+            Some("ArcMeter".into()),
+            tokens,
+            device.id,
+        );
+
+        assert_eq!(
+            database
+                .insert_usage_events(std::slice::from_ref(&completed))
+                .unwrap(),
+            1
+        );
+        assert_eq!(database.reconcile_grok_events(&[completed]).unwrap(), 1);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
+
+        let connection = Connection::open(database.path()).unwrap();
+        let (all_rows, superseded): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COUNT(superseded_by_event_id) FROM usage_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((all_rows, superseded), (2, 1));
     }
 
     #[test]
@@ -547,6 +760,6 @@ mod tests {
         assert_eq!(summary.3, 1);
         assert!(summary.4 >= 4);
         assert!(summary.5 >= 20);
-        assert_eq!(summary.6, 1);
+        assert_eq!(summary.6, 3);
     }
 }

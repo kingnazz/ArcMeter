@@ -1,7 +1,7 @@
 import { ChevronDown, Filter, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ActivityItem } from "../types";
-import { activitySourceLabel, formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, providerLabel } from "../lib/format";
+import { activitySourceLabel, formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, formatUsdMicros, formatUsdTicks, providerLabel } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 
 interface ActivityProps {
@@ -78,10 +78,13 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
                       {expanded === item.id ? (
                         <div className="token-detail">
                           {item.measurementKind === "activity_only" ? <div className="activity-only-detail"><span>Privacy-safe signal</span><strong>One foreground minute; no URL, title, prompt, response, or token count stored.</strong></div> : <>
-                            <TokenPart label="Input" value={item.inputTokens} />
+                            <TokenPart label={item.provider === "grok" ? "Input (cache included)" : "Input"} value={item.inputTokens} />
                             <TokenPart label="Cached input" value={item.cachedInputTokens} />
+                            {item.cacheWriteTokens > 0 ? <TokenPart label="Cache write" value={item.cacheWriteTokens} /> : null}
                             <TokenPart label="Output" value={item.outputTokens} />
-                            <TokenPart label="Reasoning" value={item.reasoningTokens} />
+                            <TokenPart label={item.provider === "grok" ? "Reasoning (included in output)" : "Reasoning"} value={item.reasoningTokens} />
+                            {item.nativeCostUsdTicks !== null ? <CostPart label="Recorded provider cost" value={formatUsdTicks(item.nativeCostUsdTicks)} /> : null}
+                            {item.estimatedApiValueUsdMicros !== null ? <CostPart label="Estimated API-equivalent value" value={formatUsdMicros(item.estimatedApiValueUsdMicros)} /> : null}
                           </>}
                           <div className="identity-note">Deterministic event <code>{item.id.slice(0, 12)}</code></div>
                         </div>
@@ -114,6 +117,10 @@ function FilterSelect({ label, value, onChange, options }: { label: string; valu
 
 function TokenPart({ label, value }: { label: string; value: number }) {
   return <div><span>{label}</span><strong>{formatTokenDetail(value)}</strong></div>;
+}
+
+function CostPart({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
 function unique(values: string[]): string[] {

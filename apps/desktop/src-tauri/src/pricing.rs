@@ -81,10 +81,11 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
     let events = {
         let mut statement = connection.prepare(
             "SELECT id, provider, model, occurred_at, input_tokens, cached_input_tokens,
-                    output_tokens, reasoning_tokens, total_tokens,
+                    cache_write_tokens, output_tokens, reasoning_tokens, total_tokens,
                     estimated_api_value_usd_micros, pricing_status
              FROM usage_events
-             WHERE measurement_kind = 'measured' AND model IS NOT NULL",
+             WHERE measurement_kind = 'measured' AND model IS NOT NULL
+               AND superseded_by_event_id IS NULL",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(PricingInput {
@@ -95,12 +96,13 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
                 tokens: TokenCounts {
                     input_tokens: row.get(4)?,
                     cached_input_tokens: row.get(5)?,
-                    output_tokens: row.get(6)?,
-                    reasoning_tokens: row.get(7)?,
-                    total_tokens: row.get(8)?,
+                    cache_write_tokens: row.get(6)?,
+                    output_tokens: row.get(7)?,
+                    reasoning_tokens: row.get(8)?,
+                    total_tokens: row.get(9)?,
                 },
-                previous_value: row.get(9)?,
-                previous_status: row.get(10)?,
+                previous_value: row.get(10)?,
+                previous_status: row.get(11)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()?
@@ -240,6 +242,7 @@ mod tests {
         let tokens = TokenCounts {
             input_tokens: 1_000_000,
             cached_input_tokens: 400_000,
+            cache_write_tokens: 0,
             output_tokens: 100_000,
             reasoning_tokens: 20_000,
             total_tokens: 1_100_000,

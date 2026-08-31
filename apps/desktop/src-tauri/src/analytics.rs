@@ -67,8 +67,11 @@ pub struct ActivityItem {
     pub total_tokens: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
+    pub native_cost_usd_ticks: Option<i64>,
+    pub estimated_api_value_usd_micros: Option<i64>,
     pub measurement_kind: String,
     pub device_id: String,
     pub device_name: String,
@@ -95,12 +98,14 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_api_value_usd_micros), 0),
                 COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN total_tokens ELSE 0 END), 0)
-         FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1",
+         FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+           AND superseded_by_event_id IS NULL",
         [start.to_rfc3339()],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
     )?;
     let activity_minutes_range: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only' AND occurred_at >= ?1",
+        "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only'
+           AND occurred_at >= ?1 AND superseded_by_event_id IS NULL",
         [start.to_rfc3339()],
         |row| row.get(0),
     )?;
@@ -187,7 +192,10 @@ fn normalized_sources(scan: &ScanReport) -> Vec<SourceScanResult> {
         records_seen: 0,
         records_inserted: 0,
         measured_records: 0,
+        measured_sessions: 0,
+        measured_turns: 0,
         measured_tokens: 0,
+        native_cost_usd_ticks: None,
         last_scan_at: Utc::now(),
         last_usage_at: None,
         status: "healthy".into(),
@@ -200,7 +208,8 @@ fn sum_tokens(connection: &Connection, start: DateTime<Utc>) -> Result<i64> {
     connection
         .query_row(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events
-             WHERE measurement_kind = 'measured' AND occurred_at >= ?1",
+             WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+               AND superseded_by_event_id IS NULL",
             [start.to_rfc3339()],
             |row| row.get(0),
         )
@@ -211,6 +220,7 @@ fn trend(connection: &Connection, start: DateTime<Utc>) -> Result<Vec<TrendPoint
     let mut statement = connection.prepare(
         "SELECT substr(occurred_at, 1, 10) AS day, COALESCE(SUM(total_tokens), 0)
          FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+           AND superseded_by_event_id IS NULL
          GROUP BY day ORDER BY day ASC",
     )?;
     let rows = statement.query_map([start.to_rfc3339()], |row| {
@@ -243,6 +253,7 @@ fn breakdown(
     let query = format!(
         "SELECT {column}, COALESCE(SUM(total_tokens), 0) AS tokens
          FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+           AND superseded_by_event_id IS NULL
          GROUP BY {column} ORDER BY tokens DESC LIMIT 8"
     );
     let mut statement = connection.prepare(&query)?;
@@ -269,6 +280,7 @@ fn breakdown_devices(
         "SELECT d.id, d.friendly_name, COALESCE(SUM(u.total_tokens), 0) AS tokens
          FROM usage_events u JOIN devices d ON d.id = u.device_id
          WHERE u.measurement_kind = 'measured' AND u.occurred_at >= ?1
+           AND u.superseded_by_event_id IS NULL
          GROUP BY d.id, d.friendly_name ORDER BY tokens DESC LIMIT 8",
     )?;
     let rows = statement.query_map([start.to_rfc3339()], |row| {
@@ -292,10 +304,12 @@ fn activity(
 ) -> Result<Vec<ActivityItem>> {
     let mut statement = connection.prepare(
         "SELECT u.id, u.provider, u.source, u.occurred_at, u.model, u.project_name, u.total_tokens,
-                u.input_tokens, u.cached_input_tokens, u.output_tokens, u.reasoning_tokens,
+                u.input_tokens, u.cached_input_tokens, u.cache_write_tokens, u.output_tokens,
+                u.reasoning_tokens, u.native_cost_usd_ticks, u.estimated_api_value_usd_micros,
                 u.measurement_kind, u.device_id, d.friendly_name
          FROM usage_events u JOIN devices d ON d.id = u.device_id
-         WHERE u.occurred_at >= ?1 ORDER BY u.occurred_at DESC, u.id DESC LIMIT ?2 OFFSET ?3",
+         WHERE u.occurred_at >= ?1 AND u.superseded_by_event_id IS NULL
+         ORDER BY u.occurred_at DESC, u.id DESC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = statement.query_map(params![start.to_rfc3339(), limit, offset], |row| {
         let date: String = row.get(3)?;
@@ -318,11 +332,14 @@ fn activity(
             total_tokens: row.get(6)?,
             input_tokens: row.get(7)?,
             cached_input_tokens: row.get(8)?,
-            output_tokens: row.get(9)?,
-            reasoning_tokens: row.get(10)?,
-            measurement_kind: row.get(11)?,
-            device_id: row.get(12)?,
-            device_name: row.get(13)?,
+            cache_write_tokens: row.get(9)?,
+            output_tokens: row.get(10)?,
+            reasoning_tokens: row.get(11)?,
+            native_cost_usd_ticks: row.get(12)?,
+            estimated_api_value_usd_micros: row.get(13)?,
+            measurement_kind: row.get(14)?,
+            device_id: row.get(15)?,
+            device_name: row.get(16)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -377,7 +394,8 @@ fn insights(
         let previous_start = start - period;
         let previous: i64 = connection.query_row(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events
-             WHERE measurement_kind = 'measured' AND occurred_at >= ?1 AND occurred_at < ?2",
+             WHERE measurement_kind = 'measured' AND occurred_at >= ?1 AND occurred_at < ?2
+               AND superseded_by_event_id IS NULL",
             params![previous_start.to_rfc3339(), start.to_rfc3339()],
             |row| row.get(0),
         )?;
@@ -469,6 +487,7 @@ mod tests {
             TokenCounts {
                 input_tokens: 1_000_000,
                 cached_input_tokens: 0,
+                cache_write_tokens: 0,
                 output_tokens: 100_000,
                 reasoning_tokens: 20_000,
                 total_tokens: 1_100_000,
@@ -522,6 +541,7 @@ mod tests {
             TokenCounts {
                 input_tokens: 1_000_000,
                 cached_input_tokens: 0,
+                cache_write_tokens: 0,
                 output_tokens: 100_000,
                 reasoning_tokens: 20_000,
                 total_tokens: 1_100_000,
@@ -539,6 +559,7 @@ mod tests {
             TokenCounts {
                 input_tokens: 100_000,
                 cached_input_tokens: 0,
+                cache_write_tokens: 0,
                 output_tokens: 10_000,
                 reasoning_tokens: 2_000,
                 total_tokens: 110_000,

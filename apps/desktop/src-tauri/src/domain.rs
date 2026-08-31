@@ -45,6 +45,7 @@ impl SourceType {
 pub struct TokenCounts {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
     pub total_tokens: i64,
@@ -54,6 +55,7 @@ impl TokenCounts {
     pub fn normalize(mut self) -> Self {
         self.input_tokens = self.input_tokens.max(0);
         self.cached_input_tokens = self.cached_input_tokens.max(0);
+        self.cache_write_tokens = self.cache_write_tokens.max(0);
         self.output_tokens = self.output_tokens.max(0);
         self.reasoning_tokens = self.reasoning_tokens.max(0);
         let derived = self.input_tokens.saturating_add(self.output_tokens);
@@ -79,6 +81,8 @@ pub struct UsageEvent {
     #[serde(flatten)]
     pub tokens: TokenCounts,
     pub estimated_api_value_usd_micros: Option<i64>,
+    /// Provider-recorded cost in exact 1e-10 USD ticks. This is not an ArcMeter estimate.
+    pub native_cost_usd_ticks: Option<i64>,
     pub pricing_status: String,
     pub measurement_kind: MeasurementKind,
     pub device_id: String,
@@ -114,11 +118,17 @@ impl UsageEvent {
             project_name: clean_label(project_name).and_then(|value| sanitize_project_name(&value)),
             tokens: tokens.normalize(),
             estimated_api_value_usd_micros: None,
+            native_cost_usd_ticks: None,
             pricing_status: "unavailable".into(),
             measurement_kind: MeasurementKind::Measured,
             device_id: device_id.into(),
             created_at: Utc::now(),
         }
+    }
+
+    pub fn with_native_cost_usd_ticks(mut self, ticks: Option<i64>) -> Self {
+        self.native_cost_usd_ticks = ticks.filter(|value| *value >= 0);
+        self
     }
 
     pub fn activity(
@@ -147,6 +157,7 @@ impl UsageEvent {
             project_name: None,
             tokens: TokenCounts::default(),
             estimated_api_value_usd_micros: None,
+            native_cost_usd_ticks: None,
             pricing_status: "unavailable".into(),
             measurement_kind: MeasurementKind::ActivityOnly,
             device_id,

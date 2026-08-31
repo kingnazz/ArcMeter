@@ -9,6 +9,13 @@ const currency = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+const preciseCurrency = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
 export function formatTokens(value: number): string {
   if (!Number.isFinite(value)) return "—";
   return compactNumber.format(Math.max(0, value)).replace("B", "B").replace("M", "M");
@@ -38,6 +45,11 @@ export function formatUsdCents(value: number): string {
 export function formatUsdMicros(value: number | null): string {
   if (value === null) return "Unavailable";
   return currency.format(value / 1_000_000);
+}
+
+export function formatUsdTicks(value: number | null): string {
+  if (value === null) return "Unavailable";
+  return preciseCurrency.format(value / 10_000_000_000);
 }
 
 export function formatRelativeTime(value: string | null): string {

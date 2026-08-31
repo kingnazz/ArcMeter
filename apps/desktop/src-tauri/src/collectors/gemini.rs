@@ -169,6 +169,7 @@ fn parse_values(
         let tokens = TokenCounts {
             input_tokens: input,
             cached_input_tokens: cached,
+            cache_write_tokens: 0,
             output_tokens,
             reasoning_tokens: reasoning,
             total_tokens: value_i64(

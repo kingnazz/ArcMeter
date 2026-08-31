@@ -87,6 +87,7 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
         let tokens = TokenCounts {
             input_tokens: input.saturating_add(cached).saturating_add(cache_write),
             cached_input_tokens: cached,
+            cache_write_tokens: 0,
             output_tokens,
             reasoning_tokens: 0,
             total_tokens: input
