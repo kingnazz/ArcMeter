@@ -1,8 +1,8 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { isTauri } from "@tauri-apps/api/core";
-import { Activity as ActivityIcon, Check, CloudOff, Copy, Globe2, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Activity as ActivityIcon, Check, CloudOff, Copy, Gauge, Globe2, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, Subscription } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, Subscription } from "../types";
 import { formatMinutes, formatRelativeTime, formatTokens, formatUsdTicks, providerLabel } from "../lib/format";
 import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
@@ -10,14 +10,17 @@ import { UpdateSettingRow } from "./AppUpdater";
 
 interface SettingsProps {
   data: DashboardSnapshot;
+  claudeQuota?: ProviderQuotaState | null;
   scanning: boolean;
   onScan: () => Promise<void>;
   onSync: () => Promise<void>;
   onSaveSubscription: (subscription: Subscription) => Promise<void>;
   onRenameDevice: (name: string) => Promise<Device>;
+  onToggleClaudeQuota?: (enabled: boolean) => Promise<void>;
+  onRefreshClaudeQuota?: () => Promise<void>;
 }
 
-export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, onRenameDevice }: SettingsProps) {
+export function Settings({ data, claudeQuota, scanning, onScan, onSync, onSaveSubscription, onRenameDevice, onToggleClaudeQuota, onRefreshClaudeQuota }: SettingsProps) {
   const [deviceName, setDeviceName] = useState(data.device.friendlyName);
   const [savingDevice, setSavingDevice] = useState(false);
   const [autostart, setAutostart] = useState(false);
@@ -26,6 +29,7 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
   const [auth, setAuth] = useState<AuthStatus>({ configured: false, signedIn: false, email: null, expiresAt: null });
   const [syncing, setSyncing] = useState(false);
   const [activityStatus, setActivityStatus] = useState<ActivityTrackingStatus | null>(null);
+  const [quotaBusy, setQuotaBusy] = useState(false);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -88,6 +92,32 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
     setMessage("Browser pairing token copied");
   }
 
+  async function toggleClaudeQuota(enabled: boolean) {
+    if (!onToggleClaudeQuota) return;
+    setQuotaBusy(true);
+    try {
+      await onToggleClaudeQuota(enabled);
+      setMessage(enabled ? "Claude live limits enabled" : "Claude live limits disabled");
+    } catch {
+      setMessage("Claude live limits could not be changed");
+    } finally {
+      setQuotaBusy(false);
+    }
+  }
+
+  async function refreshQuota() {
+    if (!onRefreshClaudeQuota) return;
+    setQuotaBusy(true);
+    try {
+      await onRefreshClaudeQuota();
+      setMessage("Claude live limits refreshed");
+    } catch {
+      setMessage("Claude live limits could not be refreshed");
+    } finally {
+      setQuotaBusy(false);
+    }
+  }
+
   const claudeDesktopStatusLabel = activityStatus
     ? activityStatus.claudeDesktopSupported
       ? activityStatus.claudeDesktopEnabled ? "Tracking" : "Off"
@@ -100,6 +130,25 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
       <section className="settings-section">
         <SettingsHeading title="Account" description="Secure cloud sync across your ArcMeter devices." />
         <AccountPanel auth={auth} onChange={setAuth} />
+      </section>
+
+      <section className="settings-section">
+        <SettingsHeading title="Claude live limits" description="Experimental · server-reported Claude account quota, separate from local usage." />
+        <div className="settings-panel claude-quota-setting">
+          <span className="setting-row-icon"><Gauge /></span>
+          <div>
+            <strong>Claude live limits <small>Experimental</small></strong>
+            <p>Reads your existing Claude Code sign-in locally to show server-reported usage limits. Credentials never leave this device except when sent directly to Anthropic.</p>
+            <span className={`quota-setting-status quota-setting-${claudeQuota?.status ?? "not_configured"}`}>
+              {claudeQuota?.enabled ? claudeQuota.message : "Not connected"}
+              {claudeQuota?.observedAt ? ` Last refreshed ${formatRelativeTime(claudeQuota.observedAt)}.` : ""}
+            </span>
+          </div>
+          <div className="quota-setting-actions">
+            {claudeQuota?.enabled ? <button type="button" className="secondary-button" disabled={quotaBusy} onClick={() => void refreshQuota()}><RefreshCw className={quotaBusy ? "spin" : ""} />Refresh now</button> : null}
+            <label className="switch-label compact"><span className="sr-only">Claude live limits</span><input type="checkbox" checked={claudeQuota?.enabled ?? false} disabled={quotaBusy || !onToggleClaudeQuota} onChange={(event) => void toggleClaudeQuota(event.target.checked)} /><i /></label>
+          </div>
+        </div>
       </section>
 
       <section className="settings-section">

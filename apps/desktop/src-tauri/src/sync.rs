@@ -1,5 +1,6 @@
 use crate::auth::{self, SupabaseConfig};
 use crate::db::Database;
+use crate::quota;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -32,6 +33,8 @@ pub struct SyncReport {
     pub downloaded_events: usize,
     pub downloaded_devices: usize,
     pub synced_subscriptions: usize,
+    pub uploaded_quota_snapshots: usize,
+    pub downloaded_quota_snapshots: usize,
     pub completed_at: DateTime<Utc>,
 }
 
@@ -44,13 +47,15 @@ pub async fn sync_now(database: &Database) -> Result<SyncReport, SyncError> {
         downloaded_events: 0,
         downloaded_devices: 0,
         synced_subscriptions: 0,
+        uploaded_quota_snapshots: 0,
+        downloaded_quota_snapshots: 0,
         completed_at: Utc::now(),
     };
 
     // Bound the pull with a cursor captured before the request. Advancing to the
     // completion time would skip rows committed while this sync is in flight.
     let remote_cursor = Utc::now();
-    let (devices, events, subscriptions) = pull_remote(
+    let (devices, events, subscriptions, quota_snapshots) = pull_remote(
         &client,
         &config,
         &session.access_token,
@@ -61,6 +66,7 @@ pub async fn sync_now(database: &Database) -> Result<SyncReport, SyncError> {
     report.downloaded_devices = apply_remote_devices(database, &devices)?;
     report.downloaded_events = apply_remote_events(database, &events)?;
     report.synced_subscriptions += apply_remote_subscriptions(database, &subscriptions)?;
+    report.downloaded_quota_snapshots = quota::apply_remote_snapshots(database, &quota_snapshots)?;
 
     upload_device(&client, &config, &session.access_token, database).await?;
     loop {
@@ -99,6 +105,23 @@ pub async fn sync_now(database: &Database) -> Result<SyncReport, SyncError> {
         mark_subscriptions_synced(database)?;
         report.synced_subscriptions += pending_subscriptions.len();
     }
+    let pending_quota = quota::pending_snapshots(database)?;
+    if !pending_quota.is_empty() {
+        post_upsert(
+            &client,
+            &config,
+            &session.access_token,
+            "provider_quota_snapshots",
+            &pending_quota,
+        )
+        .await?;
+        let ids = pending_quota
+            .iter()
+            .filter_map(|snapshot| snapshot.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        quota::mark_snapshots_synced(database, &ids)?;
+        report.uploaded_quota_snapshots = ids.len();
+    }
     report.completed_at = Utc::now();
     mark_sync_complete(database, remote_cursor, report.completed_at)?;
     Ok(report)
@@ -110,7 +133,7 @@ async fn pull_remote(
     access_token: &str,
     database: &Database,
     remote_cursor: DateTime<Utc>,
-) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>), SyncError> {
+) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>), SyncError> {
     let last_sync = Connection::open(database.path())?
         .query_row(
             "SELECT value FROM sync_state WHERE key = 'last_remote_sync'",
@@ -150,7 +173,17 @@ async fn pull_remote(
         "select=*&order=updated_at.asc,id.asc",
     )
     .await?;
-    Ok((devices, events, subscriptions))
+    let quota_snapshots = get_rows(
+        client,
+        config,
+        access_token,
+        "provider_quota_snapshots",
+        &format!(
+            "select=*&updated_at=gt.{encoded}&updated_at=lte.{encoded_cursor}&order=updated_at.asc,id.asc"
+        ),
+    )
+    .await?;
+    Ok((devices, events, subscriptions, quota_snapshots))
 }
 
 async fn get_rows(

@@ -17,6 +17,7 @@ const GROK_COMPLETED_TURNS_MIGRATION: &str =
     include_str!("../migrations/0003_grok_completed_turns.sql");
 const CLAUDE_REQUEST_TELEMETRY_MIGRATION: &str =
     include_str!("../migrations/0004_claude_request_telemetry.sql");
+const PROVIDER_QUOTA_MIGRATION: &str = include_str!("../migrations/0005_provider_quota.sql");
 
 const INSERT_USAGE_EVENT_SQL: &str = "INSERT INTO usage_events(
     id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
@@ -162,6 +163,17 @@ impl Database {
             transaction.pragma_update(None, "user_version", 4)?;
             transaction.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
+        if current < 5 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(PROVIDER_QUOTA_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 5)?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?1)",
                 [Utc::now().to_rfc3339()],
             )?;
             transaction.commit()?;
@@ -752,6 +764,7 @@ impl Database {
             "sync_enabled",
             "activity_claude_desktop_enabled",
             "activity_browser_bridge_enabled",
+            "claude_live_quota_enabled",
         ];
         if !ALLOWED.contains(&key) {
             return Err(DatabaseError::Invalid("Unsupported setting".into()));
@@ -958,7 +971,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(preserved, (1, 0, 0, 0, None, None, 4));
+        assert_eq!(preserved, (1, 0, 0, 0, None, None, 5));
         let claude_pricing: (String, Option<i64>, Option<i64>) = connection
             .query_row(
                 "SELECT input_token_semantics, cache_write_5m_usd_micros_per_million,

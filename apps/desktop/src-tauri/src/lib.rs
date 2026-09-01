@@ -10,6 +10,7 @@ mod db;
 mod device;
 mod domain;
 mod pricing;
+mod quota;
 mod sync;
 
 #[cfg(not(test))]
@@ -25,7 +26,7 @@ use tauri::menu::{Menu, MenuItem};
 #[cfg(not(test))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 #[cfg(not(test))]
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 #[cfg(not(test))]
 use tauri_plugin_autostart::MacosLauncher;
 #[cfg(not(test))]
@@ -37,6 +38,7 @@ pub struct AppState {
     device_id: String,
     last_scan: Arc<Mutex<ScanReport>>,
     scan_lock: Arc<Mutex<()>>,
+    quota_runtime: Arc<quota::QuotaRuntime>,
 }
 
 #[cfg(not(test))]
@@ -52,7 +54,7 @@ struct TraySummary {
 #[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -72,6 +74,7 @@ pub fn run() {
                 device_id: device.id.clone(),
                 last_scan: Arc::new(Mutex::new(ScanReport::default())),
                 scan_lock: Arc::new(Mutex::new(())),
+                quota_runtime: Arc::new(quota::QuotaRuntime::default()),
             });
 
             build_tray(app)?;
@@ -138,6 +141,18 @@ pub fn run() {
                     }
                 }
             });
+            let quota_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                while let Some(state) = quota_handle.try_state::<AppState>() {
+                    if quota::is_enabled(&state.database) {
+                        let result =
+                            quota::refresh_claude(&state.database, &state.quota_runtime).await;
+                        let _ = quota_handle.emit("arcmeter://quota-changed", result);
+                    }
+                    tokio::time::sleep(quota::POLL_INTERVAL).await;
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -167,9 +182,26 @@ pub fn run() {
             commands::auth_sign_in,
             commands::auth_sign_out,
             commands::sync_now,
+            commands::claude_quota_status,
+            commands::set_claude_quota_enabled,
+            commands::refresh_claude_quota,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ArcMeter");
+        .build(tauri::generate_context!())
+        .expect("error while building ArcMeter");
+    app.run(|handle, event| {
+        if matches!(event, RunEvent::Resumed) {
+            let handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let Some(state) = handle.try_state::<AppState>() else {
+                    return;
+                };
+                if quota::is_enabled(&state.database) {
+                    let result = quota::refresh_claude(&state.database, &state.quota_runtime).await;
+                    let _ = handle.emit("arcmeter://quota-changed", result);
+                }
+            });
+        }
+    });
 }
 
 #[cfg(not(test))]

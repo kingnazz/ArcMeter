@@ -13,6 +13,17 @@ begin
         and column_name in ('input_token_semantics', 'cache_write_5m_usd_micros_per_million', 'cache_write_1h_usd_micros_per_million')) <> 3 then
     raise exception 'Schema failure: cache pricing columns are incomplete';
   end if;
+  if (select count(*) from information_schema.columns
+      where table_schema = 'public' and table_name = 'provider_quota_snapshots'
+        and column_name in ('utilization_bps', 'resets_at', 'observed_at', 'source_device_id')) <> 4 then
+    raise exception 'Schema failure: normalized quota columns are incomplete';
+  end if;
+  if has_table_privilege('anon', 'public.provider_quota_snapshots', 'select')
+     or has_table_privilege('anon', 'public.provider_quota_snapshots', 'insert')
+     or has_table_privilege('anon', 'public.provider_quota_snapshots', 'update')
+     or has_table_privilege('anon', 'public.provider_quota_snapshots', 'delete') then
+    raise exception 'Grant failure: anon can access provider quota snapshots';
+  end if;
 end;
 $$;
 
@@ -35,6 +46,15 @@ insert into public.subscriptions(id, user_id, provider, plan_name, monthly_price
   ('subscription-a', '10000000-0000-0000-0000-000000000001', 'openai', 'A plan', 2000, 'monthly'),
   ('subscription-b', '20000000-0000-0000-0000-000000000002', 'anthropic', 'B plan', 3000, 'monthly');
 
+insert into public.provider_quota_snapshots(
+  id, snapshot_id, user_id, provider, window_key, label, kind, utilization_bps,
+  observed_at, source, source_device_id, created_at, updated_at
+) values
+  (repeat('c', 64), repeat('d', 64), '10000000-0000-0000-0000-000000000001', 'claude', 'five_hour', '5-hour', 'rolling', 4200,
+   now(), 'provider_api', '10000000-0000-0000-0000-000000000011', now(), now()),
+  (repeat('e', 64), repeat('f', 64), '20000000-0000-0000-0000-000000000002', 'claude', 'five_hour', '5-hour', 'rolling', 7700,
+   now(), 'provider_api', '20000000-0000-0000-0000-000000000022', now(), now());
+
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
 
@@ -52,6 +72,12 @@ begin
   if (select count(*) from public.subscriptions) <> 1 then
     raise exception 'RLS failure: account A can see another account subscription';
   end if;
+  if (select count(*) from public.provider_quota_snapshots) <> 1 then
+    raise exception 'RLS failure: account A can see another account quota snapshot';
+  end if;
+  if (select utilization_bps from public.provider_quota_snapshots) <> 4200 then
+    raise exception 'RLS failure: account A quota includes another account';
+  end if;
 end;
 $$;
 
@@ -61,6 +87,20 @@ begin
     insert into public.devices(id, user_id, friendly_name, os, architecture, app_version, created_at, last_seen_at)
     values ('30000000-0000-0000-0000-000000000033', '20000000-0000-0000-0000-000000000002', 'Cross-account', 'windows', 'x86_64', 'test', now(), now());
     raise exception 'RLS failure: cross-account device insert unexpectedly succeeded';
+  exception when insufficient_privilege or check_violation then
+    null;
+  end;
+
+  begin
+    insert into public.provider_quota_snapshots(
+      id, snapshot_id, user_id, provider, window_key, label, kind, utilization_bps,
+      observed_at, source, source_device_id, created_at, updated_at
+    ) values (
+      repeat('9', 64), repeat('8', 64), '20000000-0000-0000-0000-000000000002',
+      'claude', 'five_hour', '5-hour', 'rolling', 1, now(), 'provider_api',
+      '20000000-0000-0000-0000-000000000022', now(), now()
+    );
+    raise exception 'RLS failure: cross-account quota insert unexpectedly succeeded';
   exception when insufficient_privilege or check_violation then
     null;
   end;
@@ -84,6 +124,14 @@ begin
   get diagnostics affected = row_count;
   if affected <> 0 then
     raise exception 'RLS failure: cross-account usage event delete unexpectedly succeeded';
+  end if;
+
+  update public.provider_quota_snapshots
+  set utilization_bps = 1
+  where id = repeat('e', 64);
+  get diagnostics affected = row_count;
+  if affected <> 0 then
+    raise exception 'RLS failure: cross-account quota update unexpectedly succeeded';
   end if;
 end;
 $$;

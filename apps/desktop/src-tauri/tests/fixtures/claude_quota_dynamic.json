@@ -1,0 +1,19 @@
+{
+  "limits": [
+    {
+      "key": "weekly_fable",
+      "label": "Fable",
+      "kind": "model_weekly",
+      "scope": "fable",
+      "utilization": 8.125,
+      "resets_at": "2026-09-06T04:00:00Z"
+    },
+    {
+      "key": "weekly_sonnet",
+      "kind": "model_weekly",
+      "model": "sonnet",
+      "utilization": 3,
+      "resets_at": null
+    }
+  ]
+}

@@ -134,3 +134,30 @@ pub async fn sync_now(state: State<'_, AppState>) -> Result<crate::sync::SyncRep
         .await
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+pub async fn claude_quota_status(
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    crate::quota::load_state(&state.database).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_claude_quota_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    crate::quota::set_enabled(&state.database, enabled).map_err(|error| error.to_string())?;
+    if enabled {
+        Ok(crate::quota::refresh_claude(&state.database, &state.quota_runtime).await)
+    } else {
+        crate::quota::load_state(&state.database).map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_claude_quota(
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    Ok(crate::quota::refresh_claude(&state.database, &state.quota_runtime).await)
+}

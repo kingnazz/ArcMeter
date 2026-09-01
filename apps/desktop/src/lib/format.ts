@@ -62,6 +62,32 @@ export function formatRelativeTime(value: string | null): string {
   return formatter.format(-Math.round(deltaSeconds / 86_400), "day");
 }
 
+export function formatQuotaPercent(basisPoints: number): string {
+  const percent = Math.min(10_000, Math.max(0, basisPoints)) / 100;
+  return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(2).replace(/0$/, "")}%`;
+}
+
+export function formatQuotaReset(value: string | null, now = Date.now()): string {
+  if (!value) return "Reset time unavailable";
+  const reset = new Date(value);
+  const remaining = reset.getTime() - now;
+  if (!Number.isFinite(reset.getTime())) return "Reset time unavailable";
+  if (remaining <= 0) return "Reset pending";
+  if (remaining <= 24 * 60 * 60 * 1000) {
+    const totalMinutes = Math.max(1, Math.ceil(remaining / 60_000));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return hours > 0 ? `Resets in ${hours}h ${minutes}m` : `Resets in ${minutes}m`;
+  }
+  return `Resets ${new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(reset)}`;
+}
+
+export function formatMinorCurrency(value: number | null, code: string | null): string {
+  if (value === null) return "Unavailable";
+  const currencyCode = code && /^[A-Z]{3}$/.test(code) ? code : "USD";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: currencyCode }).format(value / 100);
+}
+
 export function formatActivityTime(value: string): string {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }

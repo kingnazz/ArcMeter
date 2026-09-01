@@ -33,6 +33,7 @@ Codex / Claude Code / Grok Build / Gemini CLI
 - `pricing.rs` computes API-equivalent value only when an exact, effective pricing rule exists.
 - `auth.rs` calls Supabase Auth and stores the serialized session in the OS credential store.
 - `sync.rs` pulls remote metadata, resolves local records, uploads deterministic batches, and advances sync state only after success.
+- `quota/` defines provider-neutral quota windows, fixed-point persistence, polling/backoff, and the Claude-only credential/client adapter.
 - `commands.rs` is the renderer's narrow native API.
 
 ## Startup and background behavior
@@ -40,6 +41,8 @@ Codex / Claude Code / Grok Build / Gemini CLI
 The app opens SQLite and resolves the persistent local device ID before creating collector work. Collection runs immediately and then every 60 seconds on Tauri's async runtime, with blocking parsing isolated from the UI thread. The renderer reads SQLite immediately, receives narrow data-change events, and can request a new scan. A signed-in app runs background sync at a five-minute interval; failures use capped exponential backoff.
 
 Close-to-tray is a persisted local preference. Autostart uses the official Tauri plugin with Launch Agent on macOS and the native Windows mechanism.
+
+When Claude live limits are enabled, Rust refreshes shortly after startup, every five minutes, after a system resume event, and on manual request. An atomic in-flight gate coalesces simultaneous refreshes. Positive `Retry-After` values are honored; otherwise failures use a five-minute exponential cooldown capped at one hour. Failures never delete the latest successful snapshot.
 
 ## Incremental collection
 
@@ -52,16 +55,19 @@ Future parser versions can force a replay by incrementing `PARSER_VERSION`. Log 
 Usage events are immutable and use deterministic SHA-256 IDs. Device IDs are generated UUIDs persisted in `app_settings.local_device_id`; hostnames are friendly labels only. The sync engine:
 
 1. refreshes the OS-protected Supabase session when needed;
-2. pulls remote devices, events, and subscriptions;
+2. pulls remote devices, events, subscriptions, and normalized quota snapshots;
 3. applies immutable event inserts and timestamp-guarded subscription changes;
 4. upserts the local device;
 5. uploads events in batches of 250;
 6. uploads pending subscriptions;
-7. marks local rows synced and advances `last_remote_sync` only after successful responses.
+7. uploads pending normalized quota snapshots;
+8. marks local rows synced and advances `last_remote_sync` only after successful responses.
 
 Remote pulls are ordered and paginated in 1,000-row pages. Each sync captures a high-water timestamp before requesting rows, filters events to `(previous_cursor, high_water]`, and advances to that high-water value only after the entire operation succeeds. This avoids skipping a row committed while uploads are still running.
 
 Supabase derives ownership from the JWT and RLS. The client omits `user_id` on writes and cannot override another user's ownership.
+
+Quota is account state rather than device usage. The dashboard selects the freshest complete snapshot group across devices and never sums percentages. The source device ID and friendly label remain available for freshness attribution; no provider account identity or credential fingerprint is stored.
 
 ## Future browser sources
 

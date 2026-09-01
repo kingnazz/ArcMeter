@@ -1,18 +1,19 @@
 import { useState } from "react";
 import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
-import type { BreakdownItem, DashboardSnapshot, SourceScanResult, TrendPoint } from "../types";
-import { formatMinutes, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
+import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult, TrendPoint } from "../types";
+import { formatMinorCurrency, formatMinutes, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 
 interface OverviewProps {
   data: DashboardSnapshot;
+  claudeQuota?: ProviderQuotaState | null;
   scanning: boolean;
   onScan: () => void;
 }
-export function Overview({ data, scanning, onScan }: OverviewProps) {
+export function Overview({ data, claudeQuota, scanning, onScan }: OverviewProps) {
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <Onboarding sources={data.sources} scanning={scanning} onScan={onScan} />;
+    return <div className="page-stack overview-page"><LiveLimits quota={claudeQuota} /><Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -34,6 +35,7 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
       : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
+      <LiveLimits quota={claudeQuota} />
       <section className="hero-metrics" aria-label="Headline usage metrics">
         <div className="hero-primary">
           <p className="eyebrow">Measured tokens · selected period</p>
@@ -119,6 +121,40 @@ export function Overview({ data, scanning, onScan }: OverviewProps) {
         </section>
       </div>
     </div>
+  );
+}
+
+function LiveLimits({ quota }: { quota?: ProviderQuotaState | null }) {
+  if (!quota?.enabled) return null;
+  const source = quota.sourceDeviceName ? ` from ${quota.sourceDeviceName}` : "";
+  return (
+    <section className={`panel live-limits ${quota.stale ? "live-limits-stale" : ""}`} aria-labelledby="live-limits-title">
+      <div className="live-limits-heading">
+        <div><p className="eyebrow">Claude account</p><h2 id="live-limits-title">Live limits</h2></div>
+        <div className="live-limits-freshness">
+          <span className={`status-dot status-${quota.status === "healthy" ? "healthy" : "warning"}`} />
+          <span>{quota.observedAt ? `Updated ${formatRelativeTime(quota.observedAt)}${source}` : quota.message}</span>
+        </div>
+      </div>
+      {quota.windows.length > 0 ? (
+        <div className="quota-window-list">
+          {quota.windows.map((window) => (
+            <div className="quota-window" key={window.key}>
+              <div><strong>{window.label}</strong><small>{formatQuotaReset(window.resetsAt)}</small></div>
+              <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
+              <strong>{formatQuotaPercent(window.utilizationBps)} <small>used</small></strong>
+            </div>
+          ))}
+        </div>
+      ) : <p className="quota-empty">{quota.message}</p>}
+      {quota.extraUsage ? (
+        <div className="extra-usage-row">
+          <div><strong>Extra usage</strong><small>{quota.extraUsage.enabled ? "Enabled" : "Disabled"}</small></div>
+          {quota.extraUsage.enabled ? <><span>Used this month <strong>{formatMinorCurrency(quota.extraUsage.usedCreditsMinor, quota.extraUsage.currency)}</strong></span><span>Monthly limit <strong>{formatMinorCurrency(quota.extraUsage.monthlyLimitMinor, quota.extraUsage.currency)}</strong></span></> : null}
+        </div>
+      ) : null}
+      {quota.stale ? <p className="quota-warning">{quota.message}</p> : null}
+    </section>
   );
 }
 

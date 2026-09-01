@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DashboardSnapshot } from "../types";
+import type { DashboardSnapshot, ProviderQuotaState } from "../types";
 import { Activity } from "./Activity";
 import { Overview } from "./Overview";
 import { Settings } from "./Settings";
@@ -87,7 +87,70 @@ function snapshot(): DashboardSnapshot {
   };
 }
 
+function quota(overrides: Partial<ProviderQuotaState> = {}): ProviderQuotaState {
+  return {
+    provider: "claude",
+    enabled: true,
+    status: "healthy",
+    message: "Connected through Claude Code.",
+    stale: false,
+    windows: [
+      { key: "five_hour", label: "5-hour", kind: "rolling", scope: null, utilizationBps: 4_763, resetsAt: "2026-08-31T14:14:00Z" },
+      { key: "seven_day", label: "Weekly", kind: "weekly", scope: null, utilizationBps: 1_700, resetsAt: "2026-09-04T02:00:00Z" },
+      { key: "weekly_fable", label: "Fable", kind: "model_weekly", scope: "fable", utilizationBps: 800, resetsAt: null },
+    ],
+    extraUsage: { enabled: true, monthlyLimitMinor: 5_000, usedCreditsMinor: 1_242, utilizationBps: 2_484, currency: "USD" },
+    observedAt: "2026-08-31T12:00:00Z",
+    attemptedAt: "2026-08-31T12:00:00Z",
+    retryAt: null,
+    sourceDeviceId: "device-1",
+    sourceDeviceName: "MacBook",
+    ...overrides,
+  };
+}
+
 describe("important product states", () => {
+  it("shows healthy Claude live limits, precise percentages, reset countdown, model scope, and separate extra usage", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
+    render(<Overview data={snapshot()} claudeQuota={quota()} scanning={false} onScan={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Live limits" })).toBeInTheDocument();
+    expect(screen.getByText("47.63%", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("Resets in 2h 14m")).toBeInTheDocument();
+    expect(screen.getByText("Fable")).toBeInTheDocument();
+    expect(screen.getByText("Extra usage")).toBeInTheDocument();
+    expect(screen.getByText("$12.42")).toBeInTheDocument();
+    expect(screen.getByText(/from MacBook/)).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("keeps stale limits visible when Claude is rate limited", () => {
+    render(<Overview data={snapshot()} claudeQuota={quota({ status: "rate_limited", stale: true, message: "Temporarily rate limited. Last good limits remain visible." })} scanning={false} onScan={vi.fn()} />);
+    expect(screen.getByText("Temporarily rate limited. Last good limits remain visible.")).toBeInTheDocument();
+    expect(screen.getByText("47.63%", { exact: false })).toBeInTheDocument();
+  });
+
+  it("shows no-credential and expired-login states without token details", () => {
+    const data = snapshot();
+    const baseProps = {
+      data,
+      scanning: false,
+      onScan: vi.fn(() => Promise.resolve()),
+      onSync: vi.fn(() => Promise.resolve()),
+      onSaveSubscription: vi.fn(() => Promise.resolve()),
+      onRenameDevice: vi.fn(() => Promise.resolve(data.device)),
+      onToggleClaudeQuota: vi.fn(() => Promise.resolve()),
+      onRefreshClaudeQuota: vi.fn(() => Promise.resolve()),
+    };
+    const view = render(<Settings {...baseProps} claudeQuota={quota({ status: "credential_unavailable", message: "Claude Code sign-in not found. Open Claude Code to sign in.", windows: [], observedAt: null })} />);
+    expect(screen.getByText(/Claude Code sign-in not found/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Bearer|accessToken|sk-ant/);
+    view.rerender(<Settings {...baseProps} claudeQuota={quota({ status: "expired_login", message: "Claude Code sign-in expired. Open Claude Code to refresh your sign-in.", windows: [] })} />);
+    expect(screen.getByText(/sign-in expired/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
+    expect(baseProps.onRefreshClaudeQuota).toHaveBeenCalledOnce();
+  });
+
   it("shows truthful onboarding instead of production demo analytics", () => {
     render(<Overview data={snapshot()} scanning={false} onScan={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Connect your AI usage" })).toBeInTheDocument();

@@ -138,7 +138,53 @@ export interface SyncReport {
   downloadedEvents: number;
   downloadedDevices: number;
   syncedSubscriptions: number;
+  uploadedQuotaSnapshots: number;
+  downloadedQuotaSnapshots: number;
   completedAt: string;
+}
+
+export type QuotaHealth =
+  | "not_configured"
+  | "credential_unavailable"
+  | "permission_denied"
+  | "expired_login"
+  | "forbidden"
+  | "rate_limited"
+  | "provider_unavailable"
+  | "offline"
+  | "invalid_response"
+  | "healthy";
+
+export interface ProviderQuotaWindow {
+  key: string;
+  label: string;
+  kind: "rolling" | "weekly" | "model_weekly" | "other";
+  scope: string | null;
+  utilizationBps: number;
+  resetsAt: string | null;
+}
+
+export interface ExtraUsage {
+  enabled: boolean;
+  monthlyLimitMinor: number | null;
+  usedCreditsMinor: number | null;
+  utilizationBps: number | null;
+  currency: string | null;
+}
+
+export interface ProviderQuotaState {
+  provider: string;
+  enabled: boolean;
+  status: QuotaHealth;
+  message: string;
+  stale: boolean;
+  windows: ProviderQuotaWindow[];
+  extraUsage: ExtraUsage | null;
+  observedAt: string | null;
+  attemptedAt: string | null;
+  retryAt: string | null;
+  sourceDeviceId: string | null;
+  sourceDeviceName: string | null;
 }
 
 export interface ActivityTrackingStatus {

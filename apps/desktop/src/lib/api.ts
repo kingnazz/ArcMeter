@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, RangeKey, ScanReport, Subscription, SyncReport } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, Subscription, SyncReport } from "../types";
 
 const previewNow = new Date().toISOString();
 const unavailableDevice: Device = {
@@ -124,4 +124,34 @@ export async function signOut(): Promise<AuthStatus> {
 
 export async function syncCloudNow(): Promise<SyncReport> {
   return invoke<SyncReport>("sync_now");
+}
+
+const previewQuota: ProviderQuotaState = {
+  provider: "claude",
+  enabled: false,
+  status: "not_configured",
+  message: "Claude live limits are off.",
+  stale: false,
+  windows: [],
+  extraUsage: null,
+  observedAt: null,
+  attemptedAt: null,
+  retryAt: null,
+  sourceDeviceId: null,
+  sourceDeviceName: null,
+};
+
+export async function getClaudeQuotaStatus(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewQuota;
+  return invoke<ProviderQuotaState>("claude_quota_status");
+}
+
+export async function setClaudeQuotaEnabled(enabled: boolean): Promise<ProviderQuotaState> {
+  if (!isTauri()) return { ...previewQuota, enabled, status: enabled ? "credential_unavailable" : "not_configured" };
+  return invoke<ProviderQuotaState>("set_claude_quota_enabled", { enabled });
+}
+
+export async function refreshClaudeQuota(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewQuota;
+  return invoke<ProviderQuotaState>("refresh_claude_quota");
 }

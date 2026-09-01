@@ -8,9 +8,9 @@ import { Overview } from "./components/Overview";
 import { RangeSelector } from "./components/RangeSelector";
 import { Settings } from "./components/Settings";
 import { AppUpdaterProvider, UpdateBanner } from "./components/AppUpdater";
-import { getActivityPage, getDashboard, renameDevice, saveSubscription, scanNow, syncCloudNow } from "./lib/api";
+import { getActivityPage, getClaudeQuotaStatus, getDashboard, refreshClaudeQuota, renameDevice, saveSubscription, scanNow, setClaudeQuotaEnabled, syncCloudNow } from "./lib/api";
 import { formatRelativeTime } from "./lib/format";
-import type { DashboardSnapshot, NavKey, RangeKey, Subscription } from "./types";
+import type { DashboardSnapshot, NavKey, ProviderQuotaState, RangeKey, Subscription } from "./types";
 
 const navigation: { key: NavKey; label: string; icon: typeof Gauge }[] = [
   { key: "overview", label: "Overview", icon: Gauge },
@@ -23,6 +23,7 @@ export default function App() {
   const [nav, setNav] = useState<NavKey>("overview");
   const [range, setRange] = useState<RangeKey>("month");
   const [data, setData] = useState<DashboardSnapshot | null>(null);
+  const [claudeQuota, setClaudeQuota] = useState<ProviderQuotaState | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [loadingActivity, setLoadingActivity] = useState(false);
@@ -31,8 +32,11 @@ export default function App() {
 
   const load = useCallback(async (nextRange: RangeKey = range) => {
     try {
-      const snapshot = await getDashboard(nextRange);
+      const [snapshotResult, quotaResult] = await Promise.allSettled([getDashboard(nextRange), getClaudeQuotaStatus()]);
+      if (snapshotResult.status === "rejected") throw snapshotResult.reason;
+      const snapshot = snapshotResult.value;
       setData(snapshot);
+      if (quotaResult.status === "fulfilled") setClaudeQuota(quotaResult.value);
       setActivityHasMore(snapshot.activity.length === 200);
       setError(null);
     } catch (reason) {
@@ -59,6 +63,15 @@ export default function App() {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<ProviderQuotaState>("arcmeter://quota-changed", (event) => setClaudeQuota(event.payload)).then((stop) => {
+      if (disposed) stop(); else unlisten = stop;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => { void scan(); }, 450);
     return () => window.clearTimeout(timer);
@@ -158,10 +171,10 @@ export default function App() {
 
         {loading && !data ? <LoadingState /> : data ? (
           <div className={loading ? "page-content refreshing" : "page-content"}>
-            {nav === "overview" ? <Overview data={data} scanning={scanning} onScan={() => void scan()} /> : null}
+            {nav === "overview" ? <Overview data={data} claudeQuota={claudeQuota} scanning={scanning} onScan={() => void scan()} /> : null}
             {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
             {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} /> : null}
-            {nav === "settings" ? <Settings data={data} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} /> : null}
+            {nav === "settings" ? <Settings data={data} claudeQuota={claudeQuota} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} onToggleClaudeQuota={async (enabled) => setClaudeQuota(await setClaudeQuotaEnabled(enabled))} onRefreshClaudeQuota={async () => setClaudeQuota(await refreshClaudeQuota())} /> : null}
           </div>
         ) : null}
       </main>
