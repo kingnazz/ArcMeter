@@ -54,6 +54,12 @@ Legacy Grok rows that uniquely match an authoritative completed turn are retaine
 
 Claude parser version 2 uses request identity before message/UUID identity and carries exact, local-only reconciliation hints for IDs produced by parser version 1. Proven legacy records are retained as superseded; ambiguous rows remain active. These hints contain only deterministic hashes and are not synced as a separate payload.
 
+## Read-time session summaries
+
+Sessions are not a persisted entity. The desktop derives them locally from canonical `measured` rows whose `supersededByEventId` is null, grouping by `(provider, source, nativeSessionId)`. That source-aware identity prevents provider/source collisions while canonical event IDs prevent duplicate cross-device events. The native session ID stays an opaque lookup key and is never displayed.
+
+Session project, model, device, token, pricing, and native-cost fields are rollups of those eligible rows only. API-equivalent value is a safe estimate with complete, partial, or unavailable coverage; provider-recorded native cost remains a separate fixed-point amount. Estimated telemetry and activity-only browser/desktop signals do not qualify for sessions.
+
 ## Pricing and value
 
 A pricing rule is versioned by provider, model pattern, effective date, input-context tier, and version. `inputTokenSemantics` distinguishes providers whose cache counters are included in input from providers whose counters are additive. Calculations can price fresh input, cache reads, 5m writes, 1h writes, output, and an explicit reasoning behavior. Known components may produce a `partial` lower-bound subtotal while an unknown component remains unpriced. If no safe mapping exists, the event stays `pricing_status = unavailable`. Actual subscription cost is never called API spend.

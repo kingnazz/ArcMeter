@@ -1,10 +1,11 @@
-import { Activity as ActivityIcon, BarChart3, Gauge, RefreshCw, Settings as SettingsIcon, WifiOff } from "lucide-react";
+import { Activity as ActivityIcon, BarChart3, Gauge, PanelsTopLeft, RefreshCw, Settings as SettingsIcon, WifiOff } from "lucide-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { Activity } from "./components/Activity";
 import { Insights } from "./components/Insights";
 import { Overview } from "./components/Overview";
+import { Sessions } from "./components/Sessions";
 import { RangeSelector } from "./components/RangeSelector";
 import { Settings } from "./components/Settings";
 import { AppUpdaterProvider, UpdateBanner } from "./components/AppUpdater";
@@ -15,6 +16,7 @@ import type { DashboardSnapshot, NavKey, ProviderQuotaState, RangeKey, Subscript
 const navigation: { key: NavKey; label: string; icon: typeof Gauge }[] = [
   { key: "overview", label: "Overview", icon: Gauge },
   { key: "activity", label: "Activity", icon: ActivityIcon },
+  { key: "sessions", label: "Sessions", icon: PanelsTopLeft },
   { key: "insights", label: "Insights", icon: BarChart3 },
   { key: "settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -165,10 +167,10 @@ export default function App() {
       <main>
         <div className="page-header">
           <div>
-            <p className="eyebrow">{nav === "overview" ? "Usage intelligence" : nav === "activity" ? "Measured event ledger" : nav === "insights" ? "Reliable comparisons" : "ArcMeter preferences"}</p>
+            <p className="eyebrow">{nav === "overview" ? "Usage intelligence" : nav === "activity" ? "Measured event ledger" : nav === "sessions" ? "Grouped measured work" : nav === "insights" ? "Reliable comparisons" : "ArcMeter preferences"}</p>
             <h1>{title}</h1>
           </div>
-          {nav !== "settings" ? <RangeSelector value={range} onChange={(value) => void changeRange(value)} /> : data ? <span className="updated-label">Updated {formatRelativeTime(data.generatedAt)}</span> : null}
+          {nav !== "settings" && nav !== "sessions" ? <RangeSelector value={range} onChange={(value) => void changeRange(value)} /> : data ? <span className="updated-label">Updated {formatRelativeTime(data.generatedAt)}</span> : null}
         </div>
 
         {nav !== "settings" ? <UpdateBanner onOpenSettings={() => setNav("settings")} /> : null}
@@ -178,6 +180,7 @@ export default function App() {
           <div className={loading ? "page-content refreshing" : "page-content"}>
             {nav === "overview" ? <Overview data={data} quotas={[claudeQuota, grokQuota]} scanning={scanning} onScan={() => void scan()} /> : null}
             {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
+            {nav === "sessions" ? <Sessions /> : null}
             {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} quotas={[claudeQuota, grokQuota]} /> : null}
             {nav === "settings" ? <Settings data={data} claudeQuota={claudeQuota} grokQuota={grokQuota} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} onToggleClaudeQuota={async (enabled) => setClaudeQuota(await setClaudeQuotaEnabled(enabled))} onRefreshClaudeQuota={async () => setClaudeQuota(await refreshClaudeQuota())} onToggleGrokQuota={async (enabled) => setGrokQuota(await setGrokQuotaEnabled(enabled))} onRefreshGrokQuota={async () => setGrokQuota(await refreshGrokQuota())} /> : null}
           </div>

@@ -118,6 +118,19 @@ export function formatActivityDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: date.getFullYear() === today.getFullYear() ? undefined : "numeric" }).format(date);
 }
 
+export function formatSessionDuration(seconds: number): string {
+  const minutes = Math.floor(Math.max(0, seconds) / 60);
+  if (minutes < 1) return "<1m";
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return hours === 0 ? `${minutes}m` : remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
+}
+
+export function formatUsdMicrosPrecise(value: number | null): string {
+  if (value === null) return "Pricing unavailable";
+  return preciseCurrency.format(value / 1_000_000);
+}
+
 export function providerLabel(provider: string): string {
   const labels: Record<string, string> = {
     codex: "Codex",

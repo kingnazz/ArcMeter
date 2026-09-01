@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, Subscription, SyncReport } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, SessionDetail, SessionPage, SessionQuery, Subscription, SyncReport } from "../types";
 
 const previewNow = new Date().toISOString();
 const unavailableDevice: Device = {
@@ -124,6 +124,15 @@ export async function signOut(): Promise<AuthStatus> {
 
 export async function syncCloudNow(): Promise<SyncReport> {
   return invoke<SyncReport>("sync_now");
+}
+
+export async function getSessionPage(query: SessionQuery): Promise<SessionPage> {
+  if (!isTauri()) return { sessions: [], totalCount: 0, stats: { sessionCount: 0, totalTokens: 0, estimatedApiValueUsdMicros: null }, hasMore: false };
+  return invoke<SessionPage>("session_page", { query });
+}
+
+export async function getSessionDetail(session: Pick<SessionDetail["session"], "provider" | "source" | "nativeSessionId">, limit = 100, offset = 0): Promise<SessionDetail> {
+  return invoke<SessionDetail>("session_detail", { provider: session.provider, source: session.source, nativeSessionId: session.nativeSessionId, limit, offset });
 }
 
 const previewQuota: ProviderQuotaState = {

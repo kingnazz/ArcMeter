@@ -29,7 +29,7 @@ Codex / Claude Code / Grok Build / Gemini CLI
 - `domain.rs` defines the canonical usage event, token normalization, measurement labels, sanitization, and deterministic identities.
 - `collectors/` contains provider discovery and resilient parsers. A malformed record never aborts another record or file.
 - `db.rs` owns SQLite connections, migrations, transaction boundaries, device identity, ingestion, collector state, subscriptions, and settings.
-- `analytics.rs` executes local-first aggregate queries for all four views.
+- `analytics.rs` executes local-first aggregate queries for the dashboard and activity view; `sessions.rs` derives canonical measured sessions at read time. See [`docs/SESSIONS.md`](docs/SESSIONS.md).
 - `pricing.rs` computes API-equivalent value only when an exact, effective pricing rule exists.
 - `auth.rs` calls Supabase Auth and stores the serialized session in the OS credential store.
 - `sync.rs` pulls remote metadata, resolves local records, uploads deterministic batches, and advances sync state only after success.

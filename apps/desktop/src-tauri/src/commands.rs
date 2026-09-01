@@ -48,6 +48,43 @@ pub async fn activity_page(
 }
 
 #[tauri::command]
+pub async fn session_page(
+    query: crate::sessions::SessionQuery,
+    state: State<'_, AppState>,
+) -> Result<crate::sessions::SessionPage, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::sessions::session_page(&database, query))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn session_detail(
+    provider: String,
+    source: String,
+    native_session_id: String,
+    limit: i64,
+    offset: i64,
+    state: State<'_, AppState>,
+) -> Result<crate::sessions::SessionDetail, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::sessions::session_detail(
+            &database,
+            provider,
+            source,
+            native_session_id,
+            limit,
+            offset,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn save_subscription(
     subscription: Subscription,
     state: State<'_, AppState>,

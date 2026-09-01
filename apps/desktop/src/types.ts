@@ -1,5 +1,5 @@
 export type RangeKey = "today" | "7d" | "30d" | "month" | "all";
-export type NavKey = "overview" | "activity" | "insights" | "settings";
+export type NavKey = "overview" | "activity" | "sessions" | "insights" | "settings";
 
 export interface HeadlineMetrics {
   measuredTokensToday: number;
@@ -141,6 +141,78 @@ export interface SyncReport {
   uploadedQuotaSnapshots: number;
   downloadedQuotaSnapshots: number;
   completedAt: string;
+}
+
+export type SessionPricingCoverage = "complete" | "partial" | "unavailable";
+
+export interface SessionSummary {
+  sessionKey: string;
+  provider: string;
+  source: string;
+  nativeSessionId: string;
+  projectName: string;
+  startedAt: string;
+  lastActivityAt: string;
+  durationSeconds: number;
+  eventCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  estimatedApiValueUsdMicros: number | null;
+  nativeCostUsdTicks: number | null;
+  pricingCoverage: SessionPricingCoverage;
+  primaryModel: string;
+  modelCount: number;
+  deviceCount: number;
+  primaryDeviceName: string;
+}
+
+export interface SessionStats {
+  sessionCount: number;
+  totalTokens: number;
+  estimatedApiValueUsdMicros: number | null;
+}
+
+export interface SessionPage {
+  sessions: SessionSummary[];
+  totalCount: number;
+  stats: SessionStats;
+  hasMore: boolean;
+}
+
+export interface SessionModel {
+  model: string;
+  tokens: number;
+  eventCount: number;
+}
+
+export interface SessionTimelineItem {
+  occurredAt: string;
+  model: string;
+  totalTokens: number;
+  estimatedApiValueUsdMicros: number | null;
+}
+
+export interface SessionDetail {
+  session: SessionSummary;
+  models: SessionModel[];
+  devices: string[];
+  events: SessionTimelineItem[];
+  eventsHasMore: boolean;
+}
+
+export interface SessionQuery {
+  range: "today" | "7d" | "30d" | "all";
+  provider?: string;
+  search?: string;
+  sort?: "recent" | "tokens" | "value" | "duration";
+  limit?: number;
+  offset?: number;
 }
 
 export type QuotaHealth =

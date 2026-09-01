@@ -11,6 +11,7 @@ mod device;
 mod domain;
 mod pricing;
 mod quota;
+mod sessions;
 mod sync;
 
 #[cfg(not(test))]
@@ -178,6 +179,8 @@ pub fn run() {
             commands::dashboard_snapshot,
             commands::scan_now,
             commands::activity_page,
+            commands::session_page,
+            commands::session_detail,
             commands::save_subscription,
             commands::rename_device,
             commands::get_setting,

@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DashboardSnapshot, ProviderQuotaState } from "../types";
+import type { DashboardSnapshot, ProviderQuotaState, SessionDetail, SessionPage } from "../types";
 import { Activity } from "./Activity";
 import { Insights } from "./Insights";
 import { Overview } from "./Overview";
 import { Settings } from "./Settings";
+import { Sessions } from "./Sessions";
 
 const now = "2026-08-28T07:00:00Z";
 
@@ -135,6 +136,80 @@ function analysis(overrides: Partial<ProviderQuotaState["analyses"][number]> = {
     status: "active",
     stale: false,
     ...overrides,
+  };
+}
+
+function sessionPage(overrides: Partial<SessionPage> = {}): SessionPage {
+  return {
+    sessions: [
+      {
+        sessionKey: "session-claude",
+        provider: "claude",
+        source: "claude_code",
+        nativeSessionId: "do-not-display-claude-session",
+        projectName: "ArcMeter",
+        startedAt: "2026-09-01T10:00:00Z",
+        lastActivityAt: "2026-09-01T10:42:00Z",
+        durationSeconds: 2_520,
+        eventCount: 3,
+        inputTokens: 500,
+        cachedInputTokens: 300,
+        cacheWriteTokens: 140,
+        cacheWrite5mTokens: 90,
+        cacheWrite1hTokens: 50,
+        outputTokens: 220,
+        reasoningTokens: 80,
+        totalTokens: 1_160,
+        estimatedApiValueUsdMicros: 12_340,
+        nativeCostUsdTicks: 120_000_000,
+        pricingCoverage: "partial",
+        primaryModel: "claude-sonnet",
+        modelCount: 2,
+        deviceCount: 2,
+        primaryDeviceName: "MacBook",
+      },
+      {
+        sessionKey: "session-grok",
+        provider: "grok",
+        source: "grok_build",
+        nativeSessionId: "do-not-display-grok-session",
+        projectName: "Pine",
+        startedAt: "2026-08-20T10:00:00Z",
+        lastActivityAt: "2026-08-20T10:10:00Z",
+        durationSeconds: 600,
+        eventCount: 1,
+        inputTokens: 80,
+        cachedInputTokens: 40,
+        cacheWriteTokens: 0,
+        cacheWrite5mTokens: 0,
+        cacheWrite1hTokens: 0,
+        outputTokens: 20,
+        reasoningTokens: 5,
+        totalTokens: 100,
+        estimatedApiValueUsdMicros: null,
+        nativeCostUsdTicks: null,
+        pricingCoverage: "unavailable",
+        primaryModel: "grok-build",
+        modelCount: 1,
+        deviceCount: 1,
+        primaryDeviceName: "Windows Desktop",
+      },
+    ],
+    totalCount: 2,
+    stats: { sessionCount: 2, totalTokens: 1_260, estimatedApiValueUsdMicros: 12_340 },
+    hasMore: false,
+    ...overrides,
+  };
+}
+
+function sessionDetail(page = sessionPage()): SessionDetail {
+  const session = page.sessions[0]!;
+  return {
+    session,
+    models: [{ model: "claude-sonnet", tokens: 900, eventCount: 2 }, { model: "claude-opus", tokens: 260, eventCount: 1 }],
+    devices: ["MacBook", "Windows Desktop"],
+    events: [{ occurredAt: "2026-09-01T10:00:00Z", model: "claude-sonnet", totalTokens: 600, estimatedApiValueUsdMicros: 6_000 }],
+    eventsHasMore: false,
   };
 }
 
@@ -514,5 +589,48 @@ describe("important product states", () => {
     expect(within(desktopCard!).getByText("Foreground activity only · no token telemetry")).toBeInTheDocument();
     expect(within(desktopCard!).getByText("0 min")).toBeInTheDocument();
     expect(within(desktopCard!).getByText("Unavailable")).toBeInTheDocument();
+  });
+
+  it("groups measured sessions, keeps native IDs opaque, and loads detailed token semantics on demand", async () => {
+    const page = sessionPage();
+    const loadDetail = vi.fn(() => Promise.resolve(sessionDetail(page)));
+    render(<Sessions initialPage={page} loadDetail={loadDetail} />);
+    expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Older" })).toBeInTheDocument();
+    expect(screen.getByText("Measured tokens")).toBeInTheDocument();
+    expect(screen.getByText("1.3K")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("do-not-display-claude-session");
+    expect(document.body.textContent).not.toContain("do-not-display-grok-session");
+    fireEvent.click(screen.getByRole("button", { name: /ArcMeter.*Claude Code/i }));
+    expect(await screen.findByText("Token composition")).toBeInTheDocument();
+    expect(loadDetail).toHaveBeenCalledWith(page.sessions[0]);
+    expect(screen.getByText("Fresh input (cache separate)")).toBeInTheDocument();
+    expect(screen.getByText("Reasoning (included in output)")).toBeInTheDocument();
+    expect(screen.getByText("Partial priced subtotal; unavailable components are excluded.")).toBeInTheDocument();
+    expect(screen.getByText("Recorded provider cost")).toBeInTheDocument();
+    expect(screen.getByText("MacBook")).toBeInTheDocument();
+  });
+
+  it("sends provider, date, project search, and sort filters to the bounded native session query", async () => {
+    const page = sessionPage();
+    const loadPage = vi.fn(() => Promise.resolve({ ...page, sessions: [page.sessions[0]!] }));
+    render(<Sessions initialPage={page} loadPage={loadPage} />);
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "claude" } });
+    await waitFor(() => expect(loadPage).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "claude", range: "30d", sort: "recent", limit: 50, offset: 0 })));
+    fireEvent.change(screen.getByLabelText("Date range"), { target: { value: "7d" } });
+    await waitFor(() => expect(loadPage).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "claude", range: "7d" })));
+    fireEvent.change(screen.getByLabelText("Search projects"), { target: { value: "ArcMeter" } });
+    await waitFor(() => expect(loadPage).toHaveBeenLastCalledWith(expect.objectContaining({ search: "ArcMeter" })));
+    fireEvent.change(screen.getByLabelText("Sort sessions"), { target: { value: "tokens" } });
+    await waitFor(() => expect(loadPage).toHaveBeenLastCalledWith(expect.objectContaining({ sort: "tokens" })));
+  });
+
+  it("distinguishes a first-use session empty state from filtered empty results", async () => {
+    const empty = sessionPage({ sessions: [], totalCount: 0, stats: { sessionCount: 0, totalTokens: 0, estimatedApiValueUsdMicros: null } });
+    const view = render(<Sessions initialPage={empty} />);
+    expect(screen.getByRole("heading", { name: "No measured sessions yet" })).toBeInTheDocument();
+    view.rerender(<Sessions initialPage={empty} />);
+    fireEvent.change(screen.getByLabelText("Search projects"), { target: { value: "ArcMeter" } });
+    expect(await screen.findByRole("heading", { name: "No sessions match these filters" })).toBeInTheDocument();
   });
 });
