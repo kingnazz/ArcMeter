@@ -6,14 +6,15 @@ import { ProviderMark } from "./ProviderMark";
 
 interface OverviewProps {
   data: DashboardSnapshot;
-  claudeQuota?: ProviderQuotaState | null;
+  quotas?: (ProviderQuotaState | null)[];
   scanning: boolean;
   onScan: () => void;
 }
-export function Overview({ data, claudeQuota, scanning, onScan }: OverviewProps) {
+export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps) {
+  const enabledQuotas = quotas.filter((quota): quota is ProviderQuotaState => Boolean(quota?.enabled));
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <div className="page-stack overview-page"><LiveLimits quota={claudeQuota} /><Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
+    return <div className="page-stack overview-page">{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -35,7 +36,7 @@ export function Overview({ data, claudeQuota, scanning, onScan }: OverviewProps)
       : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
-      <LiveLimits quota={claudeQuota} />
+      {enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}
       <section className="hero-metrics" aria-label="Headline usage metrics">
         <div className="hero-primary">
           <p className="eyebrow">Measured tokens · selected period</p>
@@ -124,36 +125,54 @@ export function Overview({ data, claudeQuota, scanning, onScan }: OverviewProps)
   );
 }
 
-function LiveLimits({ quota }: { quota?: ProviderQuotaState | null }) {
-  if (!quota?.enabled) return null;
-  const source = quota.sourceDeviceName ? ` from ${quota.sourceDeviceName}` : "";
+function LiveLimits({ quota }: { quota: ProviderQuotaState }) {
+  const source = quota.source === "cloud_sync" && quota.sourceDeviceName ? ` from ${quota.sourceDeviceName}` : "";
+  const provider = quota.provider === "grok" ? "Grok" : "Claude";
+  const primaryWindows = quota.windows.filter((window) => window.kind !== "product");
+  const productWindows = quota.windows.filter((window) => window.kind === "product");
   return (
-    <section className={`panel live-limits ${quota.stale ? "live-limits-stale" : ""}`} aria-labelledby="live-limits-title">
+    <section className={`panel live-limits ${quota.stale ? "live-limits-stale" : ""}`} aria-labelledby={`${quota.provider}-live-limits-title`}>
       <div className="live-limits-heading">
-        <div><p className="eyebrow">Claude account</p><h2 id="live-limits-title">Live limits</h2></div>
+        <div><p className="eyebrow">{provider} account · provider-defined quota</p><h2 id={`${quota.provider}-live-limits-title`}>{provider} live limits</h2>{quota.planLabel ? <small>{quota.planLabel}</small> : null}</div>
         <div className="live-limits-freshness">
           <span className={`status-dot status-${quota.status === "healthy" ? "healthy" : "warning"}`} />
           <span>{quota.observedAt ? `Updated ${formatRelativeTime(quota.observedAt)}${source}` : quota.message}</span>
         </div>
       </div>
-      {quota.windows.length > 0 ? (
-        <div className="quota-window-list">
-          {quota.windows.map((window) => (
-            <div className="quota-window" key={window.key}>
-              <div><strong>{window.label}</strong><small>{formatQuotaReset(window.resetsAt)}</small></div>
-              <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
-              <strong>{formatQuotaPercent(window.utilizationBps)} <small>used</small></strong>
-            </div>
-          ))}
-        </div>
-      ) : <p className="quota-empty">{quota.message}</p>}
-      {quota.extraUsage ? (
-        <div className="extra-usage-row">
-          <div><strong>Extra usage</strong><small>{quota.extraUsage.enabled ? "Enabled" : "Disabled"}</small></div>
-          {quota.extraUsage.enabled ? <><span>Used this month <strong>{formatMinorCurrency(quota.extraUsage.usedCreditsMinor, quota.extraUsage.currency)}</strong></span><span>Monthly limit <strong>{formatMinorCurrency(quota.extraUsage.monthlyLimitMinor, quota.extraUsage.currency)}</strong></span></> : null}
-        </div>
-      ) : null}
-      {quota.stale ? <p className="quota-warning">{quota.message}</p> : null}
+      <div className="quota-limits-body">
+        {primaryWindows.length > 0 ? (
+          <div className="quota-window-list">
+            {primaryWindows.map((window) => (
+              <div className="quota-window" key={window.key}>
+                <div><strong>{window.label}</strong><small>{formatQuotaReset(window.resetsAt)}</small></div>
+                <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
+                <strong>{formatQuotaPercent(window.utilizationBps)} <small>used</small></strong>
+              </div>
+            ))}
+          </div>
+        ) : <p className="quota-empty">{quota.message}</p>}
+        {productWindows.length > 0 ? (
+          <div className="quota-window-list quota-product-list" aria-label="Quota by product">
+            <p className="eyebrow">By product</p>
+            {productWindows.map((window) => (
+              <div className="quota-window" key={window.key}>
+                <div><strong>{window.label}</strong><small>Product quota</small></div>
+                <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
+                <strong>{formatQuotaPercent(window.utilizationBps)}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {quota.extraUsage ? (
+          <div className="extra-usage-row">
+            <div><strong>Extra usage</strong><small>{quota.extraUsage.enabled ? "Enabled" : "Disabled"}</small></div>
+            {quota.extraUsage.usedCreditsMinor !== null ? <span>Used <strong>{formatMinorCurrency(quota.extraUsage.usedCreditsMinor, quota.extraUsage.currency)}</strong></span> : null}
+            {quota.extraUsage.monthlyLimitMinor !== null ? <span>Cap <strong>{formatMinorCurrency(quota.extraUsage.monthlyLimitMinor, quota.extraUsage.currency)}</strong></span> : null}
+            {quota.extraUsage.prepaidBalanceMinor !== null ? <span>Prepaid balance <strong>{formatMinorCurrency(quota.extraUsage.prepaidBalanceMinor, quota.extraUsage.currency)}</strong></span> : null}
+          </div>
+        ) : null}
+        {quota.stale ? <p className="quota-warning">{quota.message}</p> : null}
+      </div>
     </section>
   );
 }

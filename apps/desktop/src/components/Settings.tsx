@@ -11,6 +11,7 @@ import { UpdateSettingRow } from "./AppUpdater";
 interface SettingsProps {
   data: DashboardSnapshot;
   claudeQuota?: ProviderQuotaState | null;
+  grokQuota?: ProviderQuotaState | null;
   scanning: boolean;
   onScan: () => Promise<void>;
   onSync: () => Promise<void>;
@@ -18,9 +19,11 @@ interface SettingsProps {
   onRenameDevice: (name: string) => Promise<Device>;
   onToggleClaudeQuota?: (enabled: boolean) => Promise<void>;
   onRefreshClaudeQuota?: () => Promise<void>;
+  onToggleGrokQuota?: (enabled: boolean) => Promise<void>;
+  onRefreshGrokQuota?: () => Promise<void>;
 }
 
-export function Settings({ data, claudeQuota, scanning, onScan, onSync, onSaveSubscription, onRenameDevice, onToggleClaudeQuota, onRefreshClaudeQuota }: SettingsProps) {
+export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSync, onSaveSubscription, onRenameDevice, onToggleClaudeQuota, onRefreshClaudeQuota, onToggleGrokQuota, onRefreshGrokQuota }: SettingsProps) {
   const [deviceName, setDeviceName] = useState(data.device.friendlyName);
   const [savingDevice, setSavingDevice] = useState(false);
   const [autostart, setAutostart] = useState(false);
@@ -118,6 +121,32 @@ export function Settings({ data, claudeQuota, scanning, onScan, onSync, onSaveSu
     }
   }
 
+  async function toggleGrokQuota(enabled: boolean) {
+    if (!onToggleGrokQuota) return;
+    setQuotaBusy(true);
+    try {
+      await onToggleGrokQuota(enabled);
+      setMessage(enabled ? "Grok live limits enabled" : "Grok live limits disabled");
+    } catch {
+      setMessage("Grok live limits could not be changed");
+    } finally {
+      setQuotaBusy(false);
+    }
+  }
+
+  async function refreshGrokQuota() {
+    if (!onRefreshGrokQuota) return;
+    setQuotaBusy(true);
+    try {
+      await onRefreshGrokQuota();
+      setMessage("Grok live limits refreshed");
+    } catch {
+      setMessage("Grok live limits could not be refreshed");
+    } finally {
+      setQuotaBusy(false);
+    }
+  }
+
   const claudeDesktopStatusLabel = activityStatus
     ? activityStatus.claudeDesktopSupported
       ? activityStatus.claudeDesktopEnabled ? "Tracking" : "Off"
@@ -130,6 +159,26 @@ export function Settings({ data, claudeQuota, scanning, onScan, onSync, onSaveSu
       <section className="settings-section">
         <SettingsHeading title="Account" description="Secure cloud sync across your ArcMeter devices." />
         <AccountPanel auth={auth} onChange={setAuth} />
+      </section>
+
+      <section className="settings-section">
+        <SettingsHeading title="Grok live limits" description="Experimental · server-reported Grok subscription quota, separate from Grok Build telemetry and Grok Web activity." />
+        <div className="settings-panel claude-quota-setting">
+          <span className="setting-row-icon"><Gauge /></span>
+          <div>
+            <strong>Grok live limits <small>Experimental</small></strong>
+            <p>Uses your existing Grok CLI sign-in. ArcMeter reads it in Rust only and sends it directly to xAI; credentials are never stored or sent to the interface.</p>
+            <span className={`quota-setting-status quota-setting-${grokQuota?.status ?? "not_configured"}`}>
+              {grokQuota?.enabled ? grokQuota.message : "Not connected"}
+              {grokQuota?.planLabel ? ` ${grokQuota.planLabel}.` : ""}
+              {grokQuota?.observedAt ? ` Last refreshed ${formatRelativeTime(grokQuota.observedAt)}.` : ""}
+            </span>
+          </div>
+          <div className="quota-setting-actions">
+            {grokQuota?.enabled ? <button type="button" className="secondary-button" disabled={quotaBusy} onClick={() => void refreshGrokQuota()}><RefreshCw className={quotaBusy ? "spin" : ""} />Refresh now</button> : null}
+            <label className="switch-label compact"><span className="sr-only">Grok live limits</span><input type="checkbox" checked={grokQuota?.enabled ?? false} disabled={quotaBusy || !onToggleGrokQuota} onChange={(event) => void toggleGrokQuota(event.target.checked)} /><i /></label>
+          </div>
+        </div>
       </section>
 
       <section className="settings-section">

@@ -95,11 +95,13 @@ function quota(overrides: Partial<ProviderQuotaState> = {}): ProviderQuotaState 
     message: "Connected through Claude Code.",
     stale: false,
     windows: [
-      { key: "five_hour", label: "5-hour", kind: "rolling", scope: null, utilizationBps: 4_763, resetsAt: "2026-08-31T14:14:00Z" },
-      { key: "seven_day", label: "Weekly", kind: "weekly", scope: null, utilizationBps: 1_700, resetsAt: "2026-09-04T02:00:00Z" },
-      { key: "weekly_fable", label: "Fable", kind: "model_weekly", scope: "fable", utilizationBps: 800, resetsAt: null },
+      { key: "five_hour", label: "5-hour", kind: "rolling", scope: null, utilizationBps: 4_763, periodStartsAt: null, resetsAt: "2026-08-31T14:14:00Z" },
+      { key: "seven_day", label: "Weekly", kind: "weekly", scope: null, utilizationBps: 1_700, periodStartsAt: null, resetsAt: "2026-09-04T02:00:00Z" },
+      { key: "weekly_fable", label: "Fable", kind: "model_weekly", scope: "fable", utilizationBps: 800, periodStartsAt: null, resetsAt: null },
     ],
-    extraUsage: { enabled: true, monthlyLimitMinor: 5_000, usedCreditsMinor: 1_242, utilizationBps: 2_484, currency: "USD" },
+    extraUsage: { enabled: true, monthlyLimitMinor: 5_000, usedCreditsMinor: 1_242, prepaidBalanceMinor: null, utilizationBps: 2_484, currency: "USD" },
+    planLabel: null,
+    source: "claude_code",
     observedAt: "2026-08-31T12:00:00Z",
     attemptedAt: "2026-08-31T12:00:00Z",
     retryAt: null,
@@ -113,8 +115,8 @@ describe("important product states", () => {
   it("shows healthy Claude live limits, precise percentages, reset countdown, model scope, and separate extra usage", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
-    render(<Overview data={snapshot()} claudeQuota={quota()} scanning={false} onScan={vi.fn()} />);
-    expect(screen.getByRole("heading", { name: "Live limits" })).toBeInTheDocument();
+    render(<Overview data={snapshot()} quotas={[quota({ source: "cloud_sync" })]} scanning={false} onScan={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Claude live limits" })).toBeInTheDocument();
     expect(screen.getByText("47.63%", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("Resets in 2h 14m")).toBeInTheDocument();
     expect(screen.getByText("Fable")).toBeInTheDocument();
@@ -125,9 +127,31 @@ describe("important product states", () => {
   });
 
   it("keeps stale limits visible when Claude is rate limited", () => {
-    render(<Overview data={snapshot()} claudeQuota={quota({ status: "rate_limited", stale: true, message: "Temporarily rate limited. Last good limits remain visible." })} scanning={false} onScan={vi.fn()} />);
+    render(<Overview data={snapshot()} quotas={[quota({ status: "rate_limited", stale: true, message: "Temporarily rate limited. Last good limits remain visible." })]} scanning={false} onScan={vi.fn()} />);
     expect(screen.getByText("Temporarily rate limited. Last good limits remain visible.")).toBeInTheDocument();
     expect(screen.getByText("47.63%", { exact: false })).toBeInTheDocument();
+  });
+
+  it("shows Grok weekly and dynamic product quota separately from local telemetry", () => {
+    const grok = quota({
+      provider: "grok",
+      message: "Connected through Grok CLI.",
+      planLabel: "SuperGrok Heavy",
+      source: "grok_cli",
+      windows: [
+        { key: "weekly_pool", label: "Weekly", kind: "weekly", scope: "USAGE_PERIOD_TYPE_WEEKLY", utilizationBps: 6_320, periodStartsAt: "2026-08-28T00:00:00Z", resetsAt: "2026-09-04T00:00:00Z" },
+        { key: "product_product_grok_build", label: "Grok Build", kind: "product", scope: "PRODUCT_GROK_BUILD", utilizationBps: 4_100, periodStartsAt: null, resetsAt: null },
+        { key: "product_product_future_thing", label: "Future Thing", kind: "product", scope: "PRODUCT_FUTURE_THING", utilizationBps: 725, periodStartsAt: null, resetsAt: null },
+      ],
+      extraUsage: { enabled: true, monthlyLimitMinor: 5_000, usedCreditsMinor: 300, prepaidBalanceMinor: 938, utilizationBps: 600, currency: "USD" },
+    });
+    render(<Overview data={snapshot()} quotas={[grok]} scanning={false} onScan={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Grok live limits" })).toBeInTheDocument();
+    expect(screen.getByText("SuperGrok Heavy")).toBeInTheDocument();
+    expect(screen.getByText("Grok Build")).toBeInTheDocument();
+    expect(screen.getByText("Future Thing")).toBeInTheDocument();
+    expect(screen.getByText("$9.38")).toBeInTheDocument();
+    expect(screen.getByText(/provider-defined quota/)).toBeInTheDocument();
   });
 
   it("shows no-credential and expired-login states without token details", () => {

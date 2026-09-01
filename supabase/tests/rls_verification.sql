@@ -15,7 +15,8 @@ begin
   end if;
   if (select count(*) from information_schema.columns
       where table_schema = 'public' and table_name = 'provider_quota_snapshots'
-        and column_name in ('utilization_bps', 'resets_at', 'observed_at', 'source_device_id')) <> 4 then
+        and column_name in ('utilization_bps', 'period_starts_at', 'resets_at', 'observed_at',
+                            'source_device_id', 'extra_prepaid_balance_minor', 'plan_label')) <> 7 then
     raise exception 'Schema failure: normalized quota columns are incomplete';
   end if;
   if has_table_privilege('anon', 'public.provider_quota_snapshots', 'select')
@@ -48,12 +49,13 @@ insert into public.subscriptions(id, user_id, provider, plan_name, monthly_price
 
 insert into public.provider_quota_snapshots(
   id, snapshot_id, user_id, provider, window_key, label, kind, utilization_bps,
-  observed_at, source, source_device_id, created_at, updated_at
+  period_starts_at, resets_at, observed_at, source, source_device_id,
+  extra_prepaid_balance_minor, plan_label, created_at, updated_at
 ) values
   (repeat('c', 64), repeat('d', 64), '10000000-0000-0000-0000-000000000001', 'claude', 'five_hour', '5-hour', 'rolling', 4200,
-   now(), 'provider_api', '10000000-0000-0000-0000-000000000011', now(), now()),
-  (repeat('e', 64), repeat('f', 64), '20000000-0000-0000-0000-000000000002', 'claude', 'five_hour', '5-hour', 'rolling', 7700,
-   now(), 'provider_api', '20000000-0000-0000-0000-000000000022', now(), now());
+   null, now() + interval '5 hours', now(), 'provider_api', '10000000-0000-0000-0000-000000000011', null, null, now(), now()),
+  (repeat('e', 64), repeat('f', 64), '20000000-0000-0000-0000-000000000002', 'grok', 'product_product_grok_build', 'Grok Build', 'product', 7700,
+   now() - interval '2 days', now() + interval '5 days', now(), 'provider_api', '20000000-0000-0000-0000-000000000022', 938, 'SuperGrok', now(), now());
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);

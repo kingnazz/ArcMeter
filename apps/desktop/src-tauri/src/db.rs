@@ -18,6 +18,8 @@ const GROK_COMPLETED_TURNS_MIGRATION: &str =
 const CLAUDE_REQUEST_TELEMETRY_MIGRATION: &str =
     include_str!("../migrations/0004_claude_request_telemetry.sql");
 const PROVIDER_QUOTA_MIGRATION: &str = include_str!("../migrations/0005_provider_quota.sql");
+const GENERIC_QUOTA_PERIODS_MIGRATION: &str =
+    include_str!("../migrations/0006_generic_quota_periods.sql");
 
 const INSERT_USAGE_EVENT_SQL: &str = "INSERT INTO usage_events(
     id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
@@ -174,6 +176,17 @@ impl Database {
             transaction.pragma_update(None, "user_version", 5)?;
             transaction.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
+        if current < 6 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(GENERIC_QUOTA_PERIODS_MIGRATION)?;
+            transaction.pragma_update(None, "user_version", 6)?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?1)",
                 [Utc::now().to_rfc3339()],
             )?;
             transaction.commit()?;
@@ -765,6 +778,7 @@ impl Database {
             "activity_claude_desktop_enabled",
             "activity_browser_bridge_enabled",
             "claude_live_quota_enabled",
+            "grok_live_quota_enabled",
         ];
         if !ALLOWED.contains(&key) {
             return Err(DatabaseError::Invalid("Unsupported setting".into()));
@@ -971,7 +985,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(preserved, (1, 0, 0, 0, None, None, 5));
+        assert_eq!(preserved, (1, 0, 0, 0, None, None, 6));
         let claude_pricing: (String, Option<i64>, Option<i64>) = connection
             .query_row(
                 "SELECT input_token_semantics, cache_write_5m_usd_micros_per_million,
@@ -984,6 +998,78 @@ mod tests {
         assert_eq!(claude_pricing.0, "cache_additive");
         assert!(claude_pricing.1.is_some());
         assert!(claude_pricing.2.is_some());
+    }
+
+    #[test]
+    fn generic_quota_migration_preserves_claude_and_accepts_product_periods() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("quota-upgrade.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(INITIAL_MIGRATION).unwrap();
+        connection
+            .execute_batch(HISTORICAL_PRICING_MIGRATION)
+            .unwrap();
+        connection
+            .execute_batch(GROK_COMPLETED_TURNS_MIGRATION)
+            .unwrap();
+        connection
+            .execute_batch(CLAUDE_REQUEST_TELEMETRY_MIGRATION)
+            .unwrap();
+        connection.execute_batch(PROVIDER_QUOTA_MIGRATION).unwrap();
+        connection.pragma_update(None, "user_version", 5).unwrap();
+        let timestamp = "2026-09-01T00:00:00Z";
+        connection.execute(
+            "INSERT INTO devices(id,friendly_name,os,architecture,app_version,created_at,last_seen_at,sync_status)
+             VALUES('device','Test','windows','x86_64','test',?1,?1,'local_only')",
+            [timestamp],
+        ).unwrap();
+        connection
+            .execute(
+                "INSERT INTO provider_quota_snapshots(
+               id,snapshot_id,provider,window_key,label,kind,utilization_bps,observed_at,
+               source,source_device_id,created_at,updated_at,sync_status)
+             VALUES(?1,?2,'claude','five_hour','5-hour','rolling',4200,?3,
+               'provider_api','device',?3,?3,'synced')",
+                params!["a".repeat(64), "b".repeat(64), timestamp],
+            )
+            .unwrap();
+        drop(connection);
+
+        let database = Database::open(&path).unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        let preserved: (String, i64, i64) = connection
+            .query_row(
+                "SELECT kind, utilization_bps, (SELECT user_version FROM pragma_user_version)
+             FROM provider_quota_snapshots",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, ("rolling".into(), 4200, 6));
+        connection
+            .execute(
+                "INSERT INTO provider_quota_snapshots(
+               id,snapshot_id,provider,window_key,label,kind,scope,utilization_bps,
+               period_starts_at,resets_at,observed_at,source,source_device_id,
+               extra_prepaid_balance_minor,plan_label,created_at,updated_at,sync_status)
+             VALUES(?1,?2,'grok','product_product_chat','Chat','product','PRODUCT_CHAT',6320,
+               ?3,?4,?3,'provider_api','device',938,'SuperGrok',?3,?3,'pending')",
+                params![
+                    "c".repeat(64),
+                    "d".repeat(64),
+                    timestamp,
+                    "2026-09-08T00:00:00Z"
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM provider_quota_snapshots", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            2
+        );
     }
 
     #[test]

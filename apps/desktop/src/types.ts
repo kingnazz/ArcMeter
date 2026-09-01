@@ -158,9 +158,10 @@ export type QuotaHealth =
 export interface ProviderQuotaWindow {
   key: string;
   label: string;
-  kind: "rolling" | "weekly" | "model_weekly" | "other";
+  kind: "rolling" | "weekly" | "monthly" | "model_weekly" | "product" | "other";
   scope: string | null;
   utilizationBps: number;
+  periodStartsAt: string | null;
   resetsAt: string | null;
 }
 
@@ -168,6 +169,7 @@ export interface ExtraUsage {
   enabled: boolean;
   monthlyLimitMinor: number | null;
   usedCreditsMinor: number | null;
+  prepaidBalanceMinor: number | null;
   utilizationBps: number | null;
   currency: string | null;
 }
@@ -180,6 +182,8 @@ export interface ProviderQuotaState {
   stale: boolean;
   windows: ProviderQuotaWindow[];
   extraUsage: ExtraUsage | null;
+  planLabel: string | null;
+  source: "claude_code" | "grok_cli" | "grok_web" | "cloud_sync";
   observedAt: string | null;
   attemptedAt: string | null;
   retryAt: string | null;

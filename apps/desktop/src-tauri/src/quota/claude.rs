@@ -451,6 +451,7 @@ fn parse_window_fields(
         kind,
         scope: scope.and_then(|value| sanitize_scope(&value)),
         utilization_bps,
+        period_starts_at: None,
         resets_at,
     })
 }
@@ -470,6 +471,7 @@ fn parse_extra_usage(value: &Value) -> Option<ExtraUsage> {
         enabled,
         monthly_limit_minor: nonnegative_integer(entry.get("monthly_limit")),
         used_credits_minor: nonnegative_integer(entry.get("used_credits")),
+        prepaid_balance_minor: None,
         utilization_bps: entry.get("utilization").and_then(percent_to_bps),
         currency,
     })
@@ -576,8 +578,10 @@ fn window_rank(window: &ProviderQuotaWindow) -> u8 {
     match window.kind {
         QuotaWindowKind::Rolling => 0,
         QuotaWindowKind::Weekly => 1,
-        QuotaWindowKind::ModelWeekly => 2,
-        QuotaWindowKind::Other => 3,
+        QuotaWindowKind::Monthly => 2,
+        QuotaWindowKind::ModelWeekly => 3,
+        QuotaWindowKind::Product => 4,
+        QuotaWindowKind::Other => 5,
     }
 }
 

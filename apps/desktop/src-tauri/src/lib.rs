@@ -150,6 +150,11 @@ pub fn run() {
                             quota::refresh_claude(&state.database, &state.quota_runtime).await;
                         let _ = quota_handle.emit("arcmeter://quota-changed", result);
                     }
+                    if quota::is_grok_enabled(&state.database) {
+                        let result =
+                            quota::refresh_grok(&state.database, &state.quota_runtime).await;
+                        let _ = quota_handle.emit("arcmeter://quota-changed", result);
+                    }
                     tokio::time::sleep(quota::POLL_INTERVAL).await;
                 }
             });
@@ -185,6 +190,9 @@ pub fn run() {
             commands::claude_quota_status,
             commands::set_claude_quota_enabled,
             commands::refresh_claude_quota,
+            commands::grok_quota_status,
+            commands::set_grok_quota_enabled,
+            commands::refresh_grok_quota,
         ])
         .build(tauri::generate_context!())
         .expect("error while building ArcMeter");
@@ -197,6 +205,10 @@ pub fn run() {
                 };
                 if quota::is_enabled(&state.database) {
                     let result = quota::refresh_claude(&state.database, &state.quota_runtime).await;
+                    let _ = handle.emit("arcmeter://quota-changed", result);
+                }
+                if quota::is_grok_enabled(&state.database) {
+                    let result = quota::refresh_grok(&state.database, &state.quota_runtime).await;
                     let _ = handle.emit("arcmeter://quota-changed", result);
                 }
             });

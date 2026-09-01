@@ -134,6 +134,8 @@ const previewQuota: ProviderQuotaState = {
   stale: false,
   windows: [],
   extraUsage: null,
+  planLabel: null,
+  source: "claude_code",
   observedAt: null,
   attemptedAt: null,
   retryAt: null,
@@ -154,4 +156,26 @@ export async function setClaudeQuotaEnabled(enabled: boolean): Promise<ProviderQ
 export async function refreshClaudeQuota(): Promise<ProviderQuotaState> {
   if (!isTauri()) return previewQuota;
   return invoke<ProviderQuotaState>("refresh_claude_quota");
+}
+
+const previewGrokQuota: ProviderQuotaState = {
+  ...previewQuota,
+  provider: "grok",
+  message: "Grok live limits are off.",
+  source: "grok_cli",
+};
+
+export async function getGrokQuotaStatus(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewGrokQuota;
+  return invoke<ProviderQuotaState>("grok_quota_status");
+}
+
+export async function setGrokQuotaEnabled(enabled: boolean): Promise<ProviderQuotaState> {
+  if (!isTauri()) return { ...previewGrokQuota, enabled, status: enabled ? "credential_unavailable" : "not_configured" };
+  return invoke<ProviderQuotaState>("set_grok_quota_enabled", { enabled });
+}
+
+export async function refreshGrokQuota(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewGrokQuota;
+  return invoke<ProviderQuotaState>("refresh_grok_quota");
 }
