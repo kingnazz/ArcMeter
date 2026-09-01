@@ -2,15 +2,121 @@ use super::{ExtraUsage, ProviderQuotaWindow, QuotaWindowKind};
 use chrono::{DateTime, Utc};
 use reqwest::{Client, StatusCode, header::RETRY_AFTER};
 use serde_json::{Map, Value};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 use sha2::{Digest, Sha256};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroize;
 
 pub const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const OAUTH_BETA: &str = "oauth-2025-04-20";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+#[cfg(any(target_os = "macos", test))]
+const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CredentialEnvironment {
+    secure_storage_config_dir: Option<OsString>,
+    config_dir: Option<OsString>,
+    home_dir: Option<PathBuf>,
+}
+
+impl CredentialEnvironment {
+    fn current() -> Self {
+        Self {
+            secure_storage_config_dir: std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+            config_dir: std::env::var_os("CLAUDE_CONFIG_DIR"),
+            home_dir: directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_owned()),
+        }
+    }
+
+    fn credential_store_dir(&self) -> PathBuf {
+        match self.secure_storage_config_dir.as_deref() {
+            Some(value) if value.is_empty() => self.default_store_dir(),
+            Some(value) => normalize_path(value),
+            None => self
+                .config_dir
+                .as_deref()
+                .map(normalize_path)
+                .unwrap_or_else(|| self.default_store_dir()),
+        }
+    }
+
+    fn credentials_path(&self) -> PathBuf {
+        self.credential_store_dir().join(".credentials.json")
+    }
+
+    fn default_store_dir(&self) -> PathBuf {
+        let directory = self
+            .home_dir
+            .as_ref()
+            .map(|home| home.join(".claude"))
+            .unwrap_or_else(|| PathBuf::from(".claude"));
+        normalize_path(directory.as_os_str())
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn keychain_services(&self) -> Vec<String> {
+        let expected_scope = match self.secure_storage_config_dir.as_deref() {
+            Some(value) if value.is_empty() => None,
+            Some(value) => Some(normalize_text(value)),
+            None => self
+                .config_dir
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(normalize_text),
+        };
+        let expected = expected_scope
+            .as_deref()
+            .map(scoped_keychain_service)
+            .unwrap_or_else(|| CLAUDE_KEYCHAIN_SERVICE.to_owned());
+
+        // Claude Code has used both the unscoped service and a path-scoped service
+        // across releases. Try its current service first, then exactly one known
+        // compatibility service; never enumerate Keychain entries.
+        let fallback = if expected_scope.is_some() {
+            CLAUDE_KEYCHAIN_SERVICE.to_owned()
+        } else {
+            scoped_keychain_service(&normalize_text(self.credential_store_dir().as_os_str()))
+        };
+        if fallback == expected {
+            vec![expected]
+        } else {
+            vec![expected, fallback]
+        }
+    }
+}
+
+fn normalize_text(value: &OsStr) -> String {
+    value.to_string_lossy().nfc().collect()
+}
+
+fn normalize_path(value: &OsStr) -> PathBuf {
+    PathBuf::from(normalize_text(value))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn scoped_keychain_service(directory: &str) -> String {
+    let digest = hex::encode(Sha256::digest(directory.as_bytes()));
+    format!("{CLAUDE_KEYCHAIN_SERVICE}-{}", &digest[..8])
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn read_first_available<T>(
+    services: &[String],
+    mut read: impl FnMut(&str) -> Result<T, CredentialError>,
+) -> Result<T, CredentialError> {
+    for service in services {
+        match read(service) {
+            Ok(value) => return Ok(value),
+            Err(CredentialError::Unavailable) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(CredentialError::Unavailable)
+}
 
 pub struct ClaudeCredential {
     access_token: String,
@@ -56,26 +162,16 @@ pub struct ParsedUsage {
 }
 
 pub fn discover_credential() -> Result<ClaudeCredential, CredentialError> {
+    let environment = CredentialEnvironment::current();
     #[cfg(target_os = "macos")]
     {
-        match read_macos_keychain() {
+        match read_macos_keychain(&environment) {
             Ok(credential) => return Ok(credential),
             Err(CredentialError::Unavailable) => {}
             Err(error) => return Err(error),
         }
     }
-    read_credentials_file(&credentials_path())
-}
-
-fn credentials_path() -> PathBuf {
-    if let Some(config_dir) =
-        std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty())
-    {
-        return PathBuf::from(config_dir).join(".credentials.json");
-    }
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".claude").join(".credentials.json"))
-        .unwrap_or_else(|| PathBuf::from(".claude").join(".credentials.json"))
+    read_credentials_file(&environment.credentials_path())
 }
 
 fn read_credentials_file(path: &Path) -> Result<ClaudeCredential, CredentialError> {
@@ -105,35 +201,19 @@ fn map_io_error(error: std::io::Error) -> CredentialError {
 }
 
 #[cfg(target_os = "macos")]
-fn read_macos_keychain() -> Result<ClaudeCredential, CredentialError> {
+fn read_macos_keychain(
+    environment: &CredentialEnvironment,
+) -> Result<ClaudeCredential, CredentialError> {
     let username = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .map_err(|_| CredentialError::Unavailable)?;
-    let service = macos_keychain_service();
-    let entry = keyring::Entry::new(&service, &username).map_err(map_keyring_error)?;
-    let mut payload = entry.get_password().map_err(map_keyring_error)?;
-    let credential = parse_credential(&payload, CredentialSource::MacOsKeychain);
-    payload.zeroize();
-    credential
-}
-
-#[cfg(target_os = "macos")]
-fn macos_keychain_service() -> String {
-    let Some(config_dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty())
-    else {
-        return "Claude Code-credentials".into();
-    };
-    let path = PathBuf::from(config_dir);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|current| current.join(&path))
-            .unwrap_or(path)
-    };
-    let resolved = std::fs::canonicalize(&absolute).unwrap_or(absolute);
-    let digest = hex::encode(Sha256::digest(resolved.to_string_lossy().as_bytes()));
-    format!("Claude Code-credentials-{}", &digest[..8])
+    read_first_available(&environment.keychain_services(), |service| {
+        let entry = keyring::Entry::new(service, &username).map_err(map_keyring_error)?;
+        let mut payload = entry.get_password().map_err(map_keyring_error)?;
+        let credential = parse_credential(&payload, CredentialSource::MacOsKeychain);
+        payload.zeroize();
+        credential
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -505,8 +585,188 @@ fn window_rank(window: &ProviderQuotaWindow) -> u8 {
 mod tests {
     use super::*;
 
+    fn credential_environment(
+        secure_storage_config_dir: Option<&str>,
+        config_dir: Option<&str>,
+    ) -> CredentialEnvironment {
+        CredentialEnvironment {
+            secure_storage_config_dir: secure_storage_config_dir.map(OsString::from),
+            config_dir: config_dir.map(OsString::from),
+            home_dir: Some(PathBuf::from("/test-home")),
+        }
+    }
+
     fn future_expiration() -> i64 {
         (Utc::now() + chrono::Duration::hours(1)).timestamp_millis()
+    }
+
+    #[test]
+    fn resolves_default_credential_store_without_overrides() {
+        let environment = credential_environment(None, None);
+        assert_eq!(
+            environment.credential_store_dir(),
+            PathBuf::from("/test-home/.claude")
+        );
+        assert_eq!(
+            environment.credentials_path(),
+            PathBuf::from("/test-home/.claude/.credentials.json")
+        );
+        assert_eq!(environment.keychain_services()[0], CLAUDE_KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn config_dir_controls_credentials_when_secure_storage_is_unset() {
+        let environment = credential_environment(None, Some("relative/config"));
+        assert_eq!(
+            environment.credentials_path(),
+            PathBuf::from("relative/config/.credentials.json")
+        );
+        assert_eq!(
+            environment.keychain_services()[0],
+            "Claude Code-credentials-708fed8f"
+        );
+    }
+
+    #[test]
+    fn secure_storage_dir_controls_credentials_and_wins_over_config_dir() {
+        let secure_only = credential_environment(Some("relative/claude"), None);
+        assert_eq!(
+            secure_only.credentials_path(),
+            PathBuf::from("relative/claude/.credentials.json")
+        );
+        assert_eq!(
+            secure_only.keychain_services()[0],
+            "Claude Code-credentials-8d62748c"
+        );
+
+        let both = credential_environment(Some("secure/store"), Some("ignored/config"));
+        assert_eq!(
+            both.credentials_path(),
+            PathBuf::from("secure/store/.credentials.json")
+        );
+        assert_eq!(
+            both.keychain_services()[0],
+            scoped_keychain_service("secure/store")
+        );
+    }
+
+    #[test]
+    fn empty_secure_storage_override_pins_the_default_store() {
+        let environment = credential_environment(Some(""), Some("ignored/config"));
+        assert_eq!(
+            environment.credentials_path(),
+            PathBuf::from("/test-home/.claude/.credentials.json")
+        );
+        assert_eq!(environment.keychain_services()[0], CLAUDE_KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn keeps_relative_and_absolute_paths_as_written_while_normalizing_unicode() {
+        let relative = credential_environment(Some("relative/../claude"), None);
+        assert_eq!(
+            relative.credential_store_dir(),
+            PathBuf::from("relative/../claude")
+        );
+
+        #[cfg(target_os = "windows")]
+        let absolute = r"C:\Claude\Secure";
+        #[cfg(not(target_os = "windows"))]
+        let absolute = "/tmp/claude-secure";
+        assert_eq!(
+            credential_environment(Some(absolute), None).credential_store_dir(),
+            PathBuf::from(absolute)
+        );
+
+        let decomposed = credential_environment(Some("cafe\u{301}"), None);
+        assert_eq!(
+            decomposed.credential_store_dir(),
+            PathBuf::from("caf\u{e9}")
+        );
+        assert_eq!(
+            decomposed.keychain_services()[0],
+            scoped_keychain_service("caf\u{e9}")
+        );
+    }
+
+    #[test]
+    fn derives_expected_lowercase_sha256_service_suffix() {
+        assert_eq!(
+            scoped_keychain_service("/tmp/claude-secure"),
+            "Claude Code-credentials-95303786"
+        );
+    }
+
+    #[test]
+    fn falls_back_only_from_missing_expected_service_to_legacy_service() {
+        let services = credential_environment(Some("relative/claude"), None).keychain_services();
+        assert_eq!(
+            services,
+            vec![
+                "Claude Code-credentials-8d62748c".to_owned(),
+                CLAUDE_KEYCHAIN_SERVICE.to_owned()
+            ]
+        );
+        let mut attempted = Vec::new();
+        let credential = read_first_available(&services, |service| {
+            attempted.push(service.to_owned());
+            if service == CLAUDE_KEYCHAIN_SERVICE {
+                Ok("legacy credential")
+            } else {
+                Err(CredentialError::Unavailable)
+            }
+        });
+        assert_eq!(credential, Ok("legacy credential"));
+        assert_eq!(attempted, services);
+    }
+
+    #[test]
+    fn missing_services_return_unavailable_without_scanning_or_masking_permission_errors() {
+        let services = credential_environment(Some("relative/claude"), None).keychain_services();
+        let mut attempted = Vec::new();
+        let missing = read_first_available(&services, |service| {
+            attempted.push(service.to_owned());
+            Err::<(), _>(CredentialError::Unavailable)
+        });
+        assert_eq!(missing, Err(CredentialError::Unavailable));
+        assert_eq!(attempted, services);
+
+        let mut permission_attempts = 0;
+        let denied = read_first_available(&services, |_| {
+            permission_attempts += 1;
+            Err::<(), _>(CredentialError::PermissionDenied)
+        });
+        assert_eq!(denied, Err(CredentialError::PermissionDenied));
+        assert_eq!(permission_attempts, 1);
+    }
+
+    #[test]
+    fn maps_permission_denied_without_including_paths_or_credentials() {
+        let secret = "synthetic-private-access-value";
+        let error = map_io_error(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            secret,
+        ));
+        assert_eq!(error, CredentialError::PermissionDenied);
+        assert!(!format!("{error:?}").contains(secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_credentials_files_readable_by_other_users() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(".credentials.json");
+        std::fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"synthetic-private-access-value"}}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            read_credentials_file(&path),
+            Err(CredentialError::PermissionDenied)
+        ));
     }
 
     #[test]

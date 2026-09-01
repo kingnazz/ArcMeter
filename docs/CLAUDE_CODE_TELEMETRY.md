@@ -8,6 +8,20 @@ ArcMeter reads Claude Code CLI transcript metadata from known project roots only
 
 It does not recursively search the home directory or read Claude credentials. Anthropic documents the default hierarchy as `projects/<project>/<session-id>.jsonl` and warns that individual JSONL records are an internal, version-varying format. ArcMeter therefore ignores unknown record fields and only accepts assistant records that expose a usage object, session identity, and a valid timestamp.
 
+## Claude live quota credentials
+
+The separate, opt-in live quota collector reads Claude Code credentials in the trusted Rust process. Credential-store precedence was verified against the official Claude Code 2.1.252 binaries:
+
+1. `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when present
+2. otherwise `CLAUDE_CONFIG_DIR`, when present
+3. otherwise `~/.claude`
+
+Presence matters: an explicitly empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` pins the default `~/.claude` credential store even when `CLAUDE_CONFIG_DIR` is set. Non-empty directory values receive NFC Unicode normalization but are otherwise matched as written; Claude Code does not expand `~`, make a relative path absolute, or canonicalize filesystem components for this purpose.
+
+On Windows and Linux, ArcMeter reads `<credential-store-dir>/.credentials.json` and retains its existing file and Unix permission checks. On macOS, the default Keychain service is `Claude Code-credentials`; a non-empty secure-storage or configuration directory selects `Claude Code-credentials-<sha256(directory)[:8]>`, using lowercase hexadecimal and the normalized directory string. ArcMeter uses the current local username as the Keychain account. It tries Claude Code's expected service first and, only when that service is absent, the one documented legacy counterpart (scoped or unscoped). It never enumerates Keychain entries.
+
+Credential discovery is read-only. ArcMeter never writes credentials, refreshes OAuth, changes file permissions or Keychain ACLs, or returns credential values to the renderer, logs, diagnostics, SQLite, or Supabase.
+
 ## Request identity
 
 One API request can appear in more than one assistant record. ArcMeter emits one event using the first available identity in this order:
