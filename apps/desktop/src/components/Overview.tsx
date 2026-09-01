@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
 import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult, TrendPoint } from "../types";
-import { formatMinorCurrency, formatMinutes, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
+import { formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 
 interface OverviewProps {
@@ -130,6 +130,7 @@ function LiveLimits({ quota }: { quota: ProviderQuotaState }) {
   const provider = quota.provider === "grok" ? "Grok" : "Claude";
   const primaryWindows = quota.windows.filter((window) => window.kind !== "product");
   const productWindows = quota.windows.filter((window) => window.kind === "product");
+  const analyses = new Map(quota.analyses.map((analysis) => [analysis.windowKey, analysis]));
   return (
     <section className={`panel live-limits ${quota.stale ? "live-limits-stale" : ""}`} aria-labelledby={`${quota.provider}-live-limits-title`}>
       <div className="live-limits-heading">
@@ -142,25 +143,35 @@ function LiveLimits({ quota }: { quota: ProviderQuotaState }) {
       <div className="quota-limits-body">
         {primaryWindows.length > 0 ? (
           <div className="quota-window-list">
-            {primaryWindows.map((window) => (
-              <div className="quota-window" key={window.key}>
-                <div><strong>{window.label}</strong><small>{formatQuotaReset(window.resetsAt)}</small></div>
-                <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
-                <strong>{formatQuotaPercent(window.utilizationBps)} <small>used</small></strong>
-              </div>
-            ))}
+            {primaryWindows.map((window, index) => {
+              const analysis = analyses.get(window.key);
+              const primary = index === 0 && analysis?.capBearing;
+              return (
+                <div className={`quota-window ${primary ? "quota-window-primary" : ""}`} key={window.key}>
+                  <div><strong>{window.label}</strong><small>{formatQuotaReset(window.resetsAt)}</small></div>
+                  <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${Math.min(100, Math.max(0, window.utilizationBps / 100))}%` }} /></div>
+                  <strong>{formatQuotaPercent(window.utilizationBps)} <small>used</small></strong>
+                  {analysis ? <QuotaPace analysis={analysis} detailed={Boolean(primary)} /> : null}
+                </div>
+              );
+            })}
           </div>
         ) : <p className="quota-empty">{quota.message}</p>}
         {productWindows.length > 0 ? (
           <div className="quota-window-list quota-product-list" aria-label="Quota by product">
             <p className="eyebrow">By product</p>
-            {productWindows.map((window) => (
-              <div className="quota-window" key={window.key}>
-                <div><strong>{window.label}</strong><small>Product quota</small></div>
-                <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
-                <strong>{formatQuotaPercent(window.utilizationBps)}</strong>
-              </div>
-            ))}
+            {productWindows.map((window) => {
+              const analysis = analyses.get(window.key);
+              const change = analysis?.recentBurnBpsPerHour;
+              return (
+                <div className="quota-window" key={window.key}>
+                  <div><strong>{window.label}</strong><small>Product quota</small></div>
+                  <div className="quota-track" aria-label={`${window.label} ${formatQuotaPercent(window.utilizationBps)} used`}><span style={{ width: `${window.utilizationBps / 100}%` }} /></div>
+                  <strong>{formatQuotaPercent(window.utilizationBps)}</strong>
+                  {change !== null && change !== undefined ? <small className="quota-product-change">{change === 0 ? "No recent change" : `${analysis!.stale ? "Previous readings" : "Recent change"} ${formatQuotaPace(change)}`}</small> : null}
+                </div>
+              );
+            })}
           </div>
         ) : null}
         {quota.extraUsage ? (
@@ -174,6 +185,27 @@ function LiveLimits({ quota }: { quota: ProviderQuotaState }) {
         {quota.stale ? <p className="quota-warning">{quota.message}</p> : null}
       </div>
     </section>
+  );
+}
+
+function QuotaPace({ analysis, detailed }: { analysis: ProviderQuotaState["analyses"][number]; detailed: boolean }) {
+  const pace = analysis.recentBurnBpsPerHour === null ? null : formatQuotaPace(analysis.recentBurnBpsPerHour);
+  let summary = "Gathering pace data";
+  if (analysis.status === "limit_reached") summary = "Limit reached";
+  else if (analysis.status === "no_recent_change") summary = "No recent change";
+  else if (analysis.status === "stale") summary = "Pace based on previous readings";
+  else if (pace) summary = pace;
+  let projection: string | null = null;
+  if (analysis.projectedBeforeReset === false) projection = "On pace to stay below limit";
+  else if (analysis.projectedExhaustionAt) projection = `Likely to reach limit in ~${formatProjectedDuration(analysis.projectedExhaustionAt)}`;
+  else if (analysis.status === "active" && analysis.confidence === "low") projection = "Projection needs more history";
+  if (!detailed) return <small className="quota-pace-compact">{summary}</small>;
+  return (
+    <div className="quota-pace-detail">
+      <div><span>Remaining</span><strong>{formatQuotaPercent(analysis.remainingBps)}</strong></div>
+      <div><span>Recent pace</span><strong>{summary}</strong></div>
+      {projection ? <div className="quota-projection"><span>At current pace</span><strong>{projection}</strong></div> : null}
+    </div>
   );
 }
 

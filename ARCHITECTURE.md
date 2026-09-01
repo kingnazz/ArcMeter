@@ -33,7 +33,7 @@ Codex / Claude Code / Grok Build / Gemini CLI
 - `pricing.rs` computes API-equivalent value only when an exact, effective pricing rule exists.
 - `auth.rs` calls Supabase Auth and stores the serialized session in the OS credential store.
 - `sync.rs` pulls remote metadata, resolves local records, uploads deterministic batches, and advances sync state only after success.
-- `quota/` defines provider-neutral quota windows, fixed-point persistence, polling/backoff, and the Claude-only credential/client adapter.
+- `quota/` defines provider-neutral quota windows, fixed-point persistence, polling/backoff, provider adapters, and read-time same-device quota pace/projection analytics. See [`docs/QUOTA_ANALYTICS.md`](docs/QUOTA_ANALYTICS.md).
 - `commands.rs` is the renderer's narrow native API.
 
 ## Startup and background behavior

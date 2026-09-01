@@ -82,6 +82,22 @@ export function formatQuotaReset(value: string | null, now = Date.now()): string
   return `Resets ${new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(reset)}`;
 }
 
+export function formatQuotaPace(basisPointsPerHour: number): string {
+  const points = Math.max(0, basisPointsPerHour) / 100;
+  const value = points >= 10 ? points.toFixed(0) : points.toFixed(1).replace(/\.0$/, "");
+  return `+${value} pts/hr`;
+}
+
+export function formatProjectedDuration(value: string, now = Date.now()): string {
+  const milliseconds = new Date(value).getTime() - now;
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "now";
+  const totalMinutes = Math.max(1, Math.round(milliseconds / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
 export function formatMinorCurrency(value: number | null, code: string | null): string {
   if (value === null) return "Unavailable";
   const currencyCode = code && /^[A-Z]{3}$/.test(code) ? code : "USD";

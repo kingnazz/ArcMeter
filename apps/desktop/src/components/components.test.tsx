@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DashboardSnapshot, ProviderQuotaState } from "../types";
 import { Activity } from "./Activity";
+import { Insights } from "./Insights";
 import { Overview } from "./Overview";
 import { Settings } from "./Settings";
 
@@ -99,6 +100,7 @@ function quota(overrides: Partial<ProviderQuotaState> = {}): ProviderQuotaState 
       { key: "seven_day", label: "Weekly", kind: "weekly", scope: null, utilizationBps: 1_700, periodStartsAt: null, resetsAt: "2026-09-04T02:00:00Z" },
       { key: "weekly_fable", label: "Fable", kind: "model_weekly", scope: "fable", utilizationBps: 800, periodStartsAt: null, resetsAt: null },
     ],
+    analyses: [],
     extraUsage: { enabled: true, monthlyLimitMinor: 5_000, usedCreditsMinor: 1_242, prepaidBalanceMinor: null, utilizationBps: 2_484, currency: "USD" },
     planLabel: null,
     source: "claude_code",
@@ -111,7 +113,70 @@ function quota(overrides: Partial<ProviderQuotaState> = {}): ProviderQuotaState 
   };
 }
 
+function analysis(overrides: Partial<ProviderQuotaState["analyses"][number]> = {}): ProviderQuotaState["analyses"][number] {
+  return {
+    provider: "claude",
+    windowKey: "five_hour",
+    label: "5-hour",
+    kind: "rolling",
+    capBearing: true,
+    utilizationBps: 6_420,
+    remainingBps: 3_580,
+    periodStartsAt: null,
+    resetsAt: "2026-08-31T18:00:00Z",
+    observedAt: "2026-08-31T12:00:00Z",
+    recentBurnBpsPerHour: 840,
+    periodAverageBurnBpsPerHour: null,
+    projectedExhaustionAt: "2026-08-31T16:15:00Z",
+    projectedBeforeReset: true,
+    sampleCount: 7,
+    observationSpanSeconds: 3_600,
+    confidence: "high",
+    status: "active",
+    stale: false,
+    ...overrides,
+  };
+}
+
 describe("important product states", () => {
+  it("shows gathering, active, reset-first, flat, stale, and reached quota pace states", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
+    const cases = [
+      analysis({ status: "gathering", confidence: "insufficient", recentBurnBpsPerHour: null, projectedExhaustionAt: null, projectedBeforeReset: null }),
+      analysis(),
+      analysis({ projectedExhaustionAt: "2026-08-31T20:00:00Z", projectedBeforeReset: false }),
+      analysis({ status: "no_recent_change", recentBurnBpsPerHour: 0, projectedExhaustionAt: null, projectedBeforeReset: null }),
+      analysis({ status: "stale", stale: true, confidence: "low", projectedExhaustionAt: null, projectedBeforeReset: null }),
+      analysis({ status: "limit_reached", utilizationBps: 10_000, remainingBps: 0, projectedExhaustionAt: null, projectedBeforeReset: null }),
+    ];
+    const expected = ["Gathering pace data", "+8.4 pts/hr", "On pace to stay below limit", "No recent change", "Pace based on previous readings", "Limit reached"];
+    cases.forEach((item, index) => {
+      const view = render(<Overview data={snapshot()} quotas={[quota({ windows: [quota().windows[0]!], analyses: [item] })]} scanning={false} onScan={vi.fn()} />);
+      expect(view.container).toHaveTextContent(expected[index]!);
+      if (index === 1) expect(view.container).toHaveTextContent("Likely to reach limit in ~4h 15m");
+      view.unmount();
+    });
+    vi.useRealTimers();
+  });
+
+  it("renders Claude and Grok quota pace together and keeps products informational", () => {
+    const product = analysis({ provider: "grok", windowKey: "product_chat", label: "Chat", kind: "product", capBearing: false, status: "informational", projectedExhaustionAt: null, projectedBeforeReset: null });
+    const grok = quota({
+      provider: "grok",
+      windows: [{ key: "product_chat", label: "Chat", kind: "product", scope: "PRODUCT_CHAT", utilizationBps: 2_600, periodStartsAt: null, resetsAt: null }],
+      analyses: [product],
+    });
+    const claude = quota({ analyses: [analysis()] });
+    render(<Insights insights={[]} byModel={[]} byProject={[]} quotas={[claude, grok]} />);
+    expect(screen.getByRole("heading", { name: "Quota pace" })).toBeInTheDocument();
+    expect(screen.getByText("Claude 5-hour")).toBeInTheDocument();
+    expect(screen.getByText("Grok Chat")).toBeInTheDocument();
+    expect(screen.getByText(/no independent cap ETA/)).toBeInTheDocument();
+    expect(screen.getByText("Informational only")).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Chat limit|reach Chat/i);
+  });
+
   it("shows healthy Claude live limits, precise percentages, reset countdown, model scope, and separate extra usage", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));

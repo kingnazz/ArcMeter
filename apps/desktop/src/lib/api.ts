@@ -133,6 +133,7 @@ const previewQuota: ProviderQuotaState = {
   message: "Claude live limits are off.",
   stale: false,
   windows: [],
+  analyses: [],
   extraUsage: null,
   planLabel: null,
   source: "claude_code",

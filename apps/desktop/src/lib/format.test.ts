@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdCents, formatUsdMicros, providerLabel } from "./format";
+import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdCents, formatUsdMicros, providerLabel } from "./format";
 
 describe("formatting", () => {
   it("keeps tokens and currency semantically distinct", () => {
@@ -13,6 +13,12 @@ describe("formatting", () => {
     expect(formatQuotaPercent(4_760)).toBe("47.6%");
     expect(formatQuotaReset("2026-08-31T14:14:00Z", Date.parse("2026-08-31T12:00:00Z"))).toBe("Resets in 2h 14m");
     expect(formatQuotaReset(null)).toBe("Reset time unavailable");
+  });
+
+  it("formats native quota pace and projected duration without token inference", () => {
+    expect(formatQuotaPace(840)).toBe("+8.4 pts/hr");
+    expect(formatQuotaPace(3_100)).toBe("+31 pts/hr");
+    expect(formatProjectedDuration("2026-08-31T16:23:00Z", Date.parse("2026-08-31T12:00:00Z"))).toBe("4h 23m");
   });
 
   it("does not invent unavailable monetary value", () => {

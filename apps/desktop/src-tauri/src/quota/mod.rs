@@ -1,5 +1,8 @@
+mod analytics;
 pub mod claude;
 pub mod grok;
+
+pub use analytics::QuotaWindowAnalysis;
 
 use crate::db::Database;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -131,6 +134,7 @@ pub struct ProviderQuotaState {
     pub message: String,
     pub stale: bool,
     pub windows: Vec<ProviderQuotaWindow>,
+    pub analyses: Vec<QuotaWindowAnalysis>,
     pub extra_usage: Option<ExtraUsage>,
     pub plan_label: Option<String>,
     pub source: String,
@@ -532,13 +536,29 @@ fn load_provider_state(
             None,
             None,
         ));
+    let stale = !windows.is_empty() && status != QuotaHealth::Healthy;
+    let analyses = observed_at
+        .zip(source_device_id.as_deref())
+        .map(|(observed, device_id)| {
+            analytics::analyze_windows(
+                &connection,
+                provider.key(),
+                &windows,
+                observed,
+                device_id,
+                stale,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
     Ok(ProviderQuotaState {
         provider: provider.key().into(),
         enabled,
         status,
         message,
-        stale: !windows.is_empty() && status != QuotaHealth::Healthy,
+        stale,
         windows,
+        analyses,
         extra_usage,
         plan_label,
         source,
@@ -567,6 +587,7 @@ fn empty_provider_state(provider: Provider, enabled: bool) -> ProviderQuotaState
         message: status_message(provider, status).into(),
         stale: false,
         windows: Vec::new(),
+        analyses: Vec::new(),
         extra_usage: None,
         plan_label: None,
         source: provider.local_source().into(),

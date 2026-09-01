@@ -33,7 +33,7 @@ Claude reports fresh input, cache reads, cache writes, and output as separate ad
 - `pricing`: versioned effective model price rules.
 - `app_settings`: allow-listed local preferences and the persistent local device ID.
 - `schema_migrations`: applied migration record.
-- `provider_quota_snapshots`: sampled, normalized provider quota percentages and reset metadata. One deterministic snapshot group represents one provider reading; it is account state and is never summed across devices.
+- `provider_quota_snapshots`: sampled, normalized provider quota percentages and reset metadata. One deterministic snapshot group represents one provider reading; it is account state and is never summed across devices. Burn rate and exhaustion projections are bounded, same-device read-time analytics over these raw basis-point samples; derived values are not persisted.
 - `provider_quota_refresh_state`: local-only sanitized health, retry, and backoff state. The last good quota snapshot remains available when refresh fails.
 
 All monetary integers use exact units: subscription prices are USD cents, API-equivalent value is USD micros, and provider-recorded native cost is preserved as 10^-10 USD ticks. Floating point is used only for display.

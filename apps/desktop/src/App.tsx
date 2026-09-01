@@ -178,7 +178,7 @@ export default function App() {
           <div className={loading ? "page-content refreshing" : "page-content"}>
             {nav === "overview" ? <Overview data={data} quotas={[claudeQuota, grokQuota]} scanning={scanning} onScan={() => void scan()} /> : null}
             {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
-            {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} /> : null}
+            {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} quotas={[claudeQuota, grokQuota]} /> : null}
             {nav === "settings" ? <Settings data={data} claudeQuota={claudeQuota} grokQuota={grokQuota} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} onToggleClaudeQuota={async (enabled) => setClaudeQuota(await setClaudeQuotaEnabled(enabled))} onRefreshClaudeQuota={async () => setClaudeQuota(await refreshClaudeQuota())} onToggleGrokQuota={async (enabled) => setGrokQuota(await setGrokQuotaEnabled(enabled))} onRefreshGrokQuota={async () => setGrokQuota(await refreshGrokQuota())} /> : null}
           </div>
         ) : null}

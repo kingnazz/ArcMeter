@@ -165,6 +165,31 @@ export interface ProviderQuotaWindow {
   resetsAt: string | null;
 }
 
+export type QuotaAnalysisConfidence = "insufficient" | "low" | "medium" | "high";
+export type QuotaAnalysisStatus = "gathering" | "no_recent_change" | "active" | "limit_reached" | "informational" | "stale";
+
+export interface QuotaWindowAnalysis {
+  provider: string;
+  windowKey: string;
+  label: string;
+  kind: ProviderQuotaWindow["kind"];
+  capBearing: boolean;
+  utilizationBps: number;
+  remainingBps: number;
+  periodStartsAt: string | null;
+  resetsAt: string | null;
+  observedAt: string;
+  recentBurnBpsPerHour: number | null;
+  periodAverageBurnBpsPerHour: number | null;
+  projectedExhaustionAt: string | null;
+  projectedBeforeReset: boolean | null;
+  sampleCount: number;
+  observationSpanSeconds: number;
+  confidence: QuotaAnalysisConfidence;
+  status: QuotaAnalysisStatus;
+  stale: boolean;
+}
+
 export interface ExtraUsage {
   enabled: boolean;
   monthlyLimitMinor: number | null;
@@ -181,6 +206,7 @@ export interface ProviderQuotaState {
   message: string;
   stale: boolean;
   windows: ProviderQuotaWindow[];
+  analyses: QuotaWindowAnalysis[];
   extraUsage: ExtraUsage | null;
   planLabel: string | null;
   source: "claude_code" | "grok_cli" | "grok_web" | "cloud_sync";
