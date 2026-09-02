@@ -236,11 +236,12 @@ function sourceLabel(source: string, provider: string): string {
 
 function valueLabel(session: SessionSummary): string {
   if (session.estimatedApiValueUsdMicros === null) return "Pricing unavailable";
-  return `${formatUsdMicrosPrecise(session.estimatedApiValueUsdMicros)} · ${session.pricingCoverage}`;
+  const qualifier = session.pricingCoverage === "complete" ? "Complete pricing" : "Partial pricing coverage";
+  return `${formatUsdMicrosPrecise(session.estimatedApiValueUsdMicros)} · ${qualifier}`;
 }
 
 function coverageDescription(coverage: SessionSummary["pricingCoverage"]): string {
-  return coverage === "complete" ? "Exact pricing covers every token-bearing event." : coverage === "partial" ? "Partial priced subtotal; unavailable components are excluded." : "No safe pricing was available for this session.";
+  return coverage === "complete" ? "Exact pricing covers every token-bearing event." : coverage === "partial" ? "Partial pricing coverage; priced subtotal excludes unavailable components." : "No safe pricing was available for this session.";
 }
 
 function queryFor(range: SessionQuery["range"], provider: string, search: string, sort: NonNullable<SessionQuery["sort"]>, offset: number): SessionQuery {

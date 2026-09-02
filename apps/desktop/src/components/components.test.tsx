@@ -606,7 +606,7 @@ describe("important product states", () => {
     expect(loadDetail).toHaveBeenCalledWith(page.sessions[0]);
     expect(screen.getByText("Fresh input (cache separate)")).toBeInTheDocument();
     expect(screen.getByText("Reasoning (included in output)")).toBeInTheDocument();
-    expect(screen.getByText("Partial priced subtotal; unavailable components are excluded.")).toBeInTheDocument();
+    expect(screen.getByText("Partial pricing coverage; priced subtotal excludes unavailable components.")).toBeInTheDocument();
     expect(screen.getByText("Recorded provider cost")).toBeInTheDocument();
     expect(screen.getByText("MacBook")).toBeInTheDocument();
   });

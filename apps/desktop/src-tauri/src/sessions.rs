@@ -7,6 +7,34 @@ use sha2::{Digest, Sha256};
 const SESSION_PAGE_SIZE: i64 = 50;
 const EVENT_PAGE_SIZE: i64 = 100;
 
+/// The filter identifies sessions, rather than the individual events to total.
+/// Parameter order: range start, provider, normalized search text, search pattern.
+const SESSION_FILTER_CTES: &str = "WITH eligible_events AS (
+    SELECT u.provider, u.source, u.native_session_id, u.occurred_at, u.model,
+           u.project_name, u.input_tokens, u.cached_input_tokens, u.cache_write_tokens,
+           u.cache_write_5m_tokens, u.cache_write_1h_tokens, u.output_tokens,
+           u.reasoning_tokens, u.total_tokens, u.estimated_api_value_usd_micros,
+           u.native_cost_usd_ticks, u.pricing_status, u.device_id, d.friendly_name
+    FROM usage_events u JOIN devices d ON d.id = u.device_id
+    WHERE u.measurement_kind = 'measured' AND u.superseded_by_event_id IS NULL
+), session_bounds AS (
+    SELECT provider, source, native_session_id, MAX(occurred_at) AS last_activity_at
+    FROM eligible_events GROUP BY provider, source, native_session_id
+), candidate_sessions AS (
+    SELECT b.provider, b.source, b.native_session_id
+    FROM session_bounds b
+    WHERE b.last_activity_at >= ?1
+      AND (?2 = '' OR b.provider = ?2)
+      AND (?3 = '' OR EXISTS (
+        SELECT 1 FROM eligible_events matching
+        WHERE matching.provider = b.provider AND matching.source = b.source
+          AND matching.native_session_id = b.native_session_id
+          AND lower(COALESCE(matching.project_name, '') || ' ' || matching.provider || ' ' ||
+              matching.source || ' ' || COALESCE(matching.model, '') || ' ' ||
+              matching.friendly_name) LIKE ?4
+      ))
+)";
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionQuery {
@@ -107,19 +135,11 @@ pub fn session_page(database: &Database, query: SessionQuery) -> Result<SessionP
     let order = session_sort(query.sort.as_deref());
     let statistics = session_stats(&connection, start, &provider, &search, &search_like)?;
     let sql = format!(
-        "WITH filtered AS (
-           SELECT u.provider, u.source, u.native_session_id, u.occurred_at, u.model,
-                  u.project_name, u.input_tokens, u.cached_input_tokens, u.cache_write_tokens,
-                  u.cache_write_5m_tokens, u.cache_write_1h_tokens, u.output_tokens,
-                  u.reasoning_tokens, u.total_tokens, u.estimated_api_value_usd_micros,
-                  u.native_cost_usd_ticks, u.pricing_status, u.device_id, d.friendly_name
-           FROM usage_events u JOIN devices d ON d.id = u.device_id
-           WHERE u.measurement_kind = 'measured' AND u.superseded_by_event_id IS NULL
-             AND u.occurred_at >= ?1
-             AND (?2 = '' OR u.provider = ?2)
-             AND (?3 = '' OR lower(COALESCE(u.project_name, '') || ' ' || u.provider || ' ' ||
-                 u.source || ' ' || COALESCE(u.model, '') || ' ' || d.friendly_name) LIKE ?4)
-         ), aggregates AS (
+        "{SESSION_FILTER_CTES}, candidate_events AS (
+           SELECT e.* FROM eligible_events e JOIN candidate_sessions c
+             ON c.provider = e.provider AND c.source = e.source
+            AND c.native_session_id = e.native_session_id
+         ), session_aggregates AS (
            SELECT provider, source, native_session_id, MIN(occurred_at) AS started_at,
                   MAX(occurred_at) AS last_activity_at, COUNT(*) AS event_count,
                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
@@ -130,20 +150,24 @@ pub fn session_page(database: &Database, query: SessionQuery) -> Result<SessionP
                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
                   COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
                   COALESCE(SUM(total_tokens), 0) AS total_tokens,
-                  SUM(estimated_api_value_usd_micros) AS api_value,
+                  SUM(CASE WHEN total_tokens > 0 AND pricing_status IN ('available', 'partial')
+                            AND estimated_api_value_usd_micros IS NOT NULL
+                           THEN estimated_api_value_usd_micros END) AS api_value,
                   SUM(native_cost_usd_ticks) AS native_cost,
-                  SUM(CASE WHEN total_tokens > 0 THEN 1 ELSE 0 END) AS priced_candidates,
+                  SUM(CASE WHEN total_tokens > 0 THEN 1 ELSE 0 END) AS relevant_events,
                   SUM(CASE WHEN total_tokens > 0 AND pricing_status = 'available'
-                            AND estimated_api_value_usd_micros IS NOT NULL THEN 1 ELSE 0 END) AS priced_events,
+                            AND estimated_api_value_usd_micros IS NOT NULL THEN 1 ELSE 0 END) AS fully_priced_events,
+                  SUM(CASE WHEN total_tokens > 0 AND pricing_status IN ('available', 'partial')
+                            AND estimated_api_value_usd_micros IS NOT NULL THEN 1 ELSE 0 END) AS defensible_value_events,
                   COUNT(DISTINCT device_id) AS device_count, MIN(friendly_name) AS primary_device_name
-           FROM filtered GROUP BY provider, source, native_session_id
+           FROM candidate_events GROUP BY provider, source, native_session_id
          ), project_ranked AS (
            SELECT provider, source, native_session_id, project_name,
                   ROW_NUMBER() OVER (
                     PARTITION BY provider, source, native_session_id
                     ORDER BY COUNT(*) DESC, MAX(occurred_at) DESC, project_name ASC
                   ) AS rank
-           FROM filtered WHERE project_name IS NOT NULL AND project_name <> ''
+           FROM candidate_events WHERE project_name IS NOT NULL AND project_name <> ''
            GROUP BY provider, source, native_session_id, project_name
          ), model_ranked AS (
            SELECT provider, source, native_session_id, COALESCE(model, 'Unknown model') AS model,
@@ -153,20 +177,20 @@ pub fn session_page(database: &Database, query: SessionQuery) -> Result<SessionP
                     ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC,
                       COALESCE(model, 'Unknown model') ASC
                   ) AS rank
-           FROM filtered
+           FROM candidate_events
            GROUP BY provider, source, native_session_id, COALESCE(model, 'Unknown model')
          )
          SELECT a.provider, a.source, a.native_session_id, a.started_at, a.last_activity_at,
                 a.event_count, a.input_tokens, a.cached_input_tokens, a.cache_write_tokens,
                 a.cache_write_5m_tokens, a.cache_write_1h_tokens, a.output_tokens,
                 a.reasoning_tokens, a.total_tokens, a.api_value, a.native_cost,
-                a.priced_candidates, a.priced_events, COALESCE(p.project_name, 'Unassigned'),
-                COALESCE(m.model, 'Unknown model'),
+                a.relevant_events, a.fully_priced_events, a.defensible_value_events,
+                COALESCE(p.project_name, 'Unassigned'), COALESCE(m.model, 'Unknown model'),
                 (SELECT COUNT(*) FROM model_ranked all_models
                  WHERE all_models.provider = a.provider AND all_models.source = a.source
                    AND all_models.native_session_id = a.native_session_id),
                 a.device_count, a.primary_device_name
-         FROM aggregates a
+         FROM session_aggregates a
          LEFT JOIN project_ranked p ON p.provider = a.provider AND p.source = a.source
            AND p.native_session_id = a.native_session_id AND p.rank = 1
          LEFT JOIN model_ranked m ON m.provider = a.provider AND m.source = a.source
@@ -246,23 +270,23 @@ fn session_stats(
     search: &str,
     search_like: &str,
 ) -> Result<SessionStats> {
+    let sql = format!(
+        "{SESSION_FILTER_CTES}, candidate_events AS (
+           SELECT e.* FROM eligible_events e JOIN candidate_sessions c
+             ON c.provider = e.provider AND c.source = e.source
+            AND c.native_session_id = e.native_session_id
+         ), sessions AS (
+           SELECT provider, source, native_session_id, COALESCE(SUM(total_tokens), 0) AS tokens,
+                  SUM(CASE WHEN total_tokens > 0 AND pricing_status IN ('available', 'partial')
+                            AND estimated_api_value_usd_micros IS NOT NULL
+                           THEN estimated_api_value_usd_micros END) AS api_value
+           FROM candidate_events GROUP BY provider, source, native_session_id
+         )
+         SELECT COUNT(*), COALESCE(SUM(tokens), 0), SUM(api_value) FROM sessions"
+    );
     connection
         .query_row(
-            "WITH filtered AS (
-               SELECT u.provider, u.source, u.native_session_id, u.total_tokens,
-                      u.estimated_api_value_usd_micros
-               FROM usage_events u JOIN devices d ON d.id = u.device_id
-               WHERE u.measurement_kind = 'measured' AND u.superseded_by_event_id IS NULL
-                 AND u.occurred_at >= ?1
-                 AND (?2 = '' OR u.provider = ?2)
-                 AND (?3 = '' OR lower(COALESCE(u.project_name, '') || ' ' || u.provider || ' ' ||
-                     u.source || ' ' || COALESCE(u.model, '') || ' ' || d.friendly_name) LIKE ?4)
-             ), sessions AS (
-               SELECT provider, source, native_session_id, COALESCE(SUM(total_tokens), 0) AS tokens,
-                      SUM(estimated_api_value_usd_micros) AS api_value
-               FROM filtered GROUP BY provider, source, native_session_id
-             )
-             SELECT COUNT(*), COALESCE(SUM(tokens), 0), SUM(api_value) FROM sessions",
+            &sql,
             params![start.to_rfc3339(), provider, search, search_like],
             |row| {
                 Ok(SessionStats {
@@ -288,9 +312,15 @@ fn detail_summary(
                     COALESCE(SUM(u.cache_write_tokens), 0), COALESCE(SUM(u.cache_write_5m_tokens), 0),
                     COALESCE(SUM(u.cache_write_1h_tokens), 0), COALESCE(SUM(u.output_tokens), 0),
                     COALESCE(SUM(u.reasoning_tokens), 0), COALESCE(SUM(u.total_tokens), 0),
-                    SUM(u.estimated_api_value_usd_micros), SUM(u.native_cost_usd_ticks),
+                    SUM(CASE WHEN u.total_tokens > 0 AND u.pricing_status IN ('available', 'partial')
+                              AND u.estimated_api_value_usd_micros IS NOT NULL
+                             THEN u.estimated_api_value_usd_micros END),
+                    SUM(u.native_cost_usd_ticks),
                     SUM(CASE WHEN u.total_tokens > 0 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN u.total_tokens > 0 AND u.pricing_status = 'available'
+                              AND u.estimated_api_value_usd_micros IS NOT NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN u.total_tokens > 0
+                              AND u.pricing_status IN ('available', 'partial')
                               AND u.estimated_api_value_usd_micros IS NOT NULL THEN 1 ELSE 0 END),
                     MIN(d.friendly_name)
              FROM usage_events u JOIN devices d ON d.id = u.device_id
@@ -321,11 +351,11 @@ fn detail_summary(
                     total_tokens: row.get(10)?,
                     estimated_api_value_usd_micros: row.get(11)?,
                     native_cost_usd_ticks: row.get(12)?,
-                    pricing_coverage: pricing_coverage(row.get(13)?, row.get(14)?),
+                    pricing_coverage: pricing_coverage(row.get(13)?, row.get(14)?, row.get(15)?),
                     primary_model: "Unknown model".into(),
                     model_count: 0,
                     device_count: 0,
-                    primary_device_name: row.get(15)?,
+                    primary_device_name: row.get(16)?,
                 })
             },
         )
@@ -434,7 +464,7 @@ fn map_session_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSumma
         provider,
         source,
         native_session_id,
-        project_name: row.get(18)?,
+        project_name: row.get(19)?,
         started_at,
         last_activity_at,
         duration_seconds: (last_activity_at - started_at).num_seconds().max(0),
@@ -449,11 +479,11 @@ fn map_session_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSumma
         total_tokens: row.get(13)?,
         estimated_api_value_usd_micros: row.get(14)?,
         native_cost_usd_ticks: row.get(15)?,
-        pricing_coverage: pricing_coverage(row.get(16)?, row.get(17)?),
-        primary_model: row.get(19)?,
-        model_count: row.get(20)?,
-        device_count: row.get(21)?,
-        primary_device_name: row.get(22)?,
+        pricing_coverage: pricing_coverage(row.get(16)?, row.get(17)?, row.get(18)?),
+        primary_model: row.get(20)?,
+        model_count: row.get(21)?,
+        device_count: row.get(22)?,
+        primary_device_name: row.get(23)?,
     })
 }
 
@@ -469,13 +499,17 @@ fn parse_datetime(value: String, index: usize) -> rusqlite::Result<DateTime<Utc>
         })
 }
 
-fn pricing_coverage(candidates: i64, priced: i64) -> String {
-    if priced <= 0 {
-        "unavailable".into()
-    } else if candidates > 0 && priced == candidates {
+fn pricing_coverage(
+    relevant_events: i64,
+    fully_priced_events: i64,
+    defensible_value_events: i64,
+) -> String {
+    if relevant_events > 0 && fully_priced_events == relevant_events {
         "complete".into()
-    } else {
+    } else if defensible_value_events > 0 {
         "partial".into()
+    } else {
+        "unavailable".into()
     }
 }
 
@@ -600,6 +634,7 @@ mod tests {
         );
         second.estimated_api_value_usd_micros = Some(2_000);
         first.pricing_status = "available".into();
+        second.pricing_status = "partial".into();
         database.insert_usage_events(&[first, second]).unwrap();
         let page = session_page(&database, all_query()).unwrap();
         assert_eq!(page.total_count, 1);
@@ -768,6 +803,18 @@ mod tests {
                 .iter()
                 .all(|item| !first_keys.contains(&&item.session_key))
         );
+        let mut changed_filter = all_query();
+        changed_filter.provider = Some("codex".into());
+        changed_filter.search = Some("TDVR".into());
+        changed_filter.limit = Some(10);
+        let changed_first_page = session_page(&database, changed_filter).unwrap();
+        assert_eq!(changed_first_page.sessions.len(), 10);
+        assert!(
+            changed_first_page
+                .sessions
+                .iter()
+                .all(|item| item.project_name == "TDVR")
+        );
     }
 
     #[test]
@@ -830,6 +877,261 @@ mod tests {
         assert_eq!(page.total_count, 1_000);
         assert_eq!(page.sessions.len(), 50);
         assert!(started.elapsed() < StdDuration::from_secs(5));
+    }
+
+    #[test]
+    fn search_qualifies_a_session_without_truncating_its_models_devices_totals_or_stats() {
+        let (_directory, database, device) = database();
+        let timestamp = Utc::now().to_rfc3339();
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO devices(id,friendly_name,os,architecture,app_version,created_at,last_seen_at,sync_status)
+                 VALUES('mac','MacBook','macos','aarch64','test',?1,?1,'synced')",
+                [&timestamp],
+            )
+            .unwrap();
+
+        let mut opus = event(
+            "claude",
+            "claude_code",
+            "complete",
+            "opus",
+            0,
+            Some("Claude Opus"),
+            Some("ArcMeter"),
+            &device,
+        );
+        opus.tokens.total_tokens = 800_000;
+        let mut sonnet = event(
+            "claude",
+            "claude_code",
+            "complete",
+            "sonnet",
+            10,
+            Some("Claude Sonnet"),
+            Some("ArcMeter"),
+            "mac",
+        );
+        sonnet.tokens.total_tokens = 200_000;
+        let mut smaller = event(
+            "claude",
+            "claude_code",
+            "smaller",
+            "turn",
+            20,
+            Some("Claude Haiku"),
+            Some("Other"),
+            &device,
+        );
+        smaller.tokens.total_tokens = 400_000;
+        let mut other_provider = event(
+            "grok",
+            "grok_build",
+            "other-provider",
+            "turn",
+            30,
+            Some("Grok Opus Adapter"),
+            Some("Elsewhere"),
+            &device,
+        );
+        other_provider.tokens.total_tokens = 50_000;
+        database
+            .insert_usage_events(&[opus, sonnet, smaller, other_provider])
+            .unwrap();
+
+        let mut query = all_query();
+        query.search = Some("Opus".into());
+        let searched = session_page(&database, query.clone()).unwrap();
+        assert_eq!(searched.total_count, 2);
+        let complete = searched
+            .sessions
+            .iter()
+            .find(|item| item.native_session_id == "complete")
+            .unwrap();
+        assert_eq!(complete.total_tokens, 1_000_000);
+        assert_eq!(complete.model_count, 2);
+        assert_eq!(complete.device_count, 2);
+        assert_eq!(searched.stats.total_tokens, 1_050_000);
+
+        query.provider = Some("claude".into());
+        let provider_filtered = session_page(&database, query).unwrap();
+        assert_eq!(provider_filtered.total_count, 1);
+        assert_eq!(provider_filtered.sessions[0].total_tokens, 1_000_000);
+
+        let mut project_query = all_query();
+        project_query.search = Some("ArcMeter".into());
+        assert_eq!(
+            session_page(&database, project_query).unwrap().sessions[0].total_tokens,
+            1_000_000
+        );
+        let mut device_query = all_query();
+        device_query.search = Some("MacBook".into());
+        assert_eq!(
+            session_page(&database, device_query).unwrap().sessions[0].total_tokens,
+            1_000_000
+        );
+
+        let mut sort_query = all_query();
+        sort_query.sort = Some("tokens".into());
+        assert_eq!(
+            session_page(&database, sort_query).unwrap().sessions[0].native_session_id,
+            "complete"
+        );
+        let detail = session_detail(
+            &database,
+            "claude".into(),
+            "claude_code".into(),
+            "complete".into(),
+            100,
+            0,
+        )
+        .unwrap();
+        assert_eq!(detail.session.total_tokens, complete.total_tokens);
+        assert_eq!(detail.models.len(), 2);
+    }
+
+    #[test]
+    fn range_qualifies_by_last_activity_without_truncating_a_cross_midnight_session() {
+        let (_directory, database, device) = database();
+        let day_start = local_day_start(Utc::now());
+        let mut before_midnight = event(
+            "codex",
+            "codex_cli",
+            "cross-midnight",
+            "before",
+            0,
+            Some("gpt"),
+            Some("ArcMeter"),
+            &device,
+        );
+        before_midnight.occurred_at = day_start - Duration::minutes(10);
+        before_midnight.tokens.total_tokens = 1_000_000;
+        let mut after_midnight = event(
+            "codex",
+            "codex_cli",
+            "cross-midnight",
+            "after",
+            0,
+            Some("gpt"),
+            Some("ArcMeter"),
+            &device,
+        );
+        after_midnight.occurred_at = day_start + Duration::minutes(20);
+        after_midnight.tokens.total_tokens = 400_000;
+        database
+            .insert_usage_events(&[before_midnight, after_midnight])
+            .unwrap();
+        let mut query = all_query();
+        query.range = "today".into();
+        let page = session_page(&database, query).unwrap();
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.sessions[0].total_tokens, 1_400_000);
+        assert_eq!(page.stats.total_tokens, 1_400_000);
+        assert_eq!(
+            page.sessions[0].started_at,
+            day_start - Duration::minutes(10)
+        );
+    }
+
+    #[test]
+    fn pricing_coverage_keeps_partial_subtotals_and_matches_detail() {
+        let (_directory, database, device) = database();
+        let cases = [
+            (
+                "all-available",
+                [
+                    ("available", Some(2_000_000)),
+                    ("available", Some(3_000_000)),
+                ],
+                "complete",
+                Some(5_000_000),
+            ),
+            (
+                "available-partial",
+                [("available", Some(2_000_000)), ("partial", Some(1_000_000))],
+                "partial",
+                Some(3_000_000),
+            ),
+            (
+                "partial-only",
+                [("partial", Some(4_000_000)), ("partial", Some(2_000_000))],
+                "partial",
+                Some(6_000_000),
+            ),
+            (
+                "available-unavailable",
+                [("available", Some(3_000_000)), ("unavailable", None)],
+                "partial",
+                Some(3_000_000),
+            ),
+            (
+                "partial-unavailable",
+                [("partial", Some(2_000_000)), ("unavailable", None)],
+                "partial",
+                Some(2_000_000),
+            ),
+            (
+                "unavailable-only",
+                [("unavailable", None), ("unavailable", None)],
+                "unavailable",
+                None,
+            ),
+        ];
+        let mut events = Vec::new();
+        for (session, prices, _, _) in cases {
+            for (index, (status, value)) in prices.into_iter().enumerate() {
+                let mut item = event(
+                    "claude",
+                    "claude_code",
+                    session,
+                    &format!("turn-{index}"),
+                    index as i64,
+                    Some("Claude"),
+                    Some("ArcMeter"),
+                    &device,
+                );
+                item.pricing_status = status.into();
+                item.estimated_api_value_usd_micros = value;
+                if session == "partial-only" && index == 0 {
+                    item.native_cost_usd_ticks = Some(120_000_000);
+                }
+                events.push(item);
+            }
+        }
+        database.insert_usage_events(&events).unwrap();
+        let page = session_page(&database, all_query()).unwrap();
+        assert_eq!(page.stats.estimated_api_value_usd_micros, Some(19_000_000));
+        for (session_id, _, expected_coverage, expected_value) in cases {
+            let listed = page
+                .sessions
+                .iter()
+                .find(|item| item.native_session_id == session_id)
+                .unwrap();
+            assert_eq!(listed.pricing_coverage, expected_coverage);
+            assert_eq!(listed.estimated_api_value_usd_micros, expected_value);
+            let detail = session_detail(
+                &database,
+                "claude".into(),
+                "claude_code".into(),
+                session_id.into(),
+                100,
+                0,
+            )
+            .unwrap();
+            assert_eq!(detail.session.pricing_coverage, listed.pricing_coverage);
+            assert_eq!(
+                detail.session.estimated_api_value_usd_micros,
+                listed.estimated_api_value_usd_micros
+            );
+        }
+        let partial_only = page
+            .sessions
+            .iter()
+            .find(|item| item.native_session_id == "partial-only")
+            .unwrap();
+        assert_eq!(partial_only.native_cost_usd_ticks, Some(120_000_000));
+        assert_eq!(partial_only.estimated_api_value_usd_micros, Some(6_000_000));
     }
 
     #[test]
