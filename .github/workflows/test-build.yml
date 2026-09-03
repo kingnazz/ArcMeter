@@ -1,0 +1,96 @@
+name: ArcMeter Test Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/test-build.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-2025
+            artifact: arcmeter-test-windows-x64
+            bundles: nsis
+            targetArgs: ""
+            rustTargets: ""
+            appleSigningIdentity: ""
+            artifactPath: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          - platform: macos-15
+            artifact: arcmeter-test-macos-arm64
+            bundles: dmg
+            targetArgs: --target aarch64-apple-darwin
+            rustTargets: aarch64-apple-darwin
+            appleSigningIdentity: "-"
+            artifactPath: apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          - platform: macos-15
+            artifact: arcmeter-test-macos-x64
+            bundles: dmg
+            targetArgs: --target x86_64-apple-darwin
+            rustTargets: x86_64-apple-darwin
+            appleSigningIdentity: "-"
+            artifactPath: apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTargets }}
+      - run: pnpm install --frozen-lockfile
+      - name: Require test-build credentials
+        shell: pwsh
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          UPDATER_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.ARCMETER_SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.ARCMETER_SUPABASE_ANON_KEY }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:UPDATER_KEY)) { $missing += "TAURI_SIGNING_PRIVATE_KEY" }
+          if ([string]::IsNullOrWhiteSpace($env:UPDATER_PASSWORD)) { $missing += "TAURI_SIGNING_PRIVATE_KEY_PASSWORD" }
+          if ([string]::IsNullOrWhiteSpace($env:SUPABASE_URL)) { $missing += "ARCMETER_SUPABASE_URL" }
+          if ([string]::IsNullOrWhiteSpace($env:SUPABASE_KEY)) { $missing += "ARCMETER_SUPABASE_ANON_KEY" }
+          if ($missing.Count -gt 0) { throw "Missing required repository secrets: $($missing -join ', ')" }
+      - name: Build installable test bundle
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.appleSigningIdentity }}
+          ARCMETER_SUPABASE_URL: ${{ secrets.ARCMETER_SUPABASE_URL }}
+          ARCMETER_SUPABASE_ANON_KEY: ${{ secrets.ARCMETER_SUPABASE_ANON_KEY }}
+        run: pnpm tauri build --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }} ${{ matrix.targetArgs }}
+      - name: Verify macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dmgs=(apps/desktop/src-tauri/target/${{ matrix.rustTargets }}/release/bundle/dmg/*.dmg)
+          if (( ${#dmgs[@]} != 1 )); then
+            echo "expected exactly one DMG, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          scripts/verify-macos-dmg.sh "${dmgs[0]}" "${{ matrix.rustTargets == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifactPath }}
+          if-no-files-found: error
+          retention-days: 14
