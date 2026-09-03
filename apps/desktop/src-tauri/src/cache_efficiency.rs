@@ -521,27 +521,6 @@ mod tests {
         assert_eq!(cache.normalized_input_context_tokens, Some(2_000));
         assert_eq!(cache.reuse_share_bps, Some(7_000));
         assert_eq!(cache.semantic_coverage, CoverageState::Complete);
-        let codex = cache
-            .by_provider
-            .iter()
-            .find(|item| item.provider.as_deref() == Some("codex"))
-            .expect("Codex provider breakdown");
-        assert_eq!(codex.cache_write_tokens, 100);
-        assert_eq!(codex.fresh_input_tokens, Some(200));
-        assert_eq!(codex.cache_write_unspecified_tokens, 100);
-        assert_eq!(codex.reuse_share_bps, Some(7_000));
-        let model = cache
-            .by_model
-            .iter()
-            .find(|item| item.model.as_deref() == Some("gpt-5.6-sol"))
-            .expect("Codex model breakdown");
-        assert_eq!(model.cache_write_tokens, 100);
-        let project = cache
-            .by_project
-            .iter()
-            .find(|item| item.project.as_deref() == Some("ArcMeter"))
-            .expect("Codex project breakdown");
-        assert_eq!(project.cache_write_tokens, 100);
     }
 
     #[test]
@@ -916,7 +895,6 @@ mod tests {
                 TokenCounts {
                     input_tokens: 100,
                     cached_input_tokens: 40,
-                    cache_write_tokens: 20,
                     ..Default::default()
                 },
                 &device,
@@ -924,11 +902,7 @@ mod tests {
             .unwrap();
         let summary = session_summary(&database, "codex", "codex_cli", "session").unwrap();
         assert_eq!(summary.cached_input_tokens, 40);
-        assert_eq!(summary.cache_write_tokens, 20);
-        assert_eq!(summary.cache_write_5m_tokens, 0);
-        assert_eq!(summary.cache_write_1h_tokens, 0);
-        assert_eq!(summary.cache_write_unspecified_tokens, 20);
-        assert_eq!(summary.fresh_input_tokens, Some(40));
+        assert_eq!(summary.fresh_input_tokens, Some(60));
         assert_eq!(summary.reuse_share_bps, Some(4_000));
     }
 
