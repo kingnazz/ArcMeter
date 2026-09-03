@@ -3,6 +3,7 @@
 mod activity_tracking;
 mod analytics;
 mod auth;
+mod cache_efficiency;
 mod collectors;
 #[cfg(not(test))]
 mod commands;
@@ -177,6 +178,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::dashboard_snapshot,
+            commands::cache_efficiency,
             commands::scan_now,
             commands::activity_page,
             commands::session_page,

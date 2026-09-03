@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DashboardSnapshot, ProviderQuotaState, SessionDetail, SessionPage } from "../types";
+import type { CacheEfficiencyReport, DashboardSnapshot, ProviderQuotaState, SessionDetail, SessionPage } from "../types";
 import { Activity } from "./Activity";
 import { Insights } from "./Insights";
 import { Overview } from "./Overview";
@@ -9,7 +9,10 @@ import { Sessions } from "./Sessions";
 
 const now = "2026-08-28T07:00:00Z";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function snapshot(): DashboardSnapshot {
   return {
@@ -206,6 +209,20 @@ function sessionDetail(page = sessionPage()): SessionDetail {
   const session = page.sessions[0]!;
   return {
     session,
+    cache: {
+      semanticCoverage: "complete",
+      freshInputTokens: 500,
+      cachedInputTokens: 300,
+      cacheWriteTokens: 140,
+      cacheWrite5mTokens: 90,
+      cacheWrite1hTokens: 50,
+      cacheWriteUnspecifiedTokens: 0,
+      normalizedInputContextTokens: 940,
+      reuseShareBps: 3_191,
+      apiEquivalentCacheImpactUsdMicros: 1_500_000,
+      cachePricingCoverage: "complete",
+      measuredEventCount: 3,
+    },
     models: [{ model: "claude-sonnet", tokens: 900, eventCount: 2 }, { model: "claude-opus", tokens: 260, eventCount: 1 }],
     devices: ["MacBook", "Windows Desktop"],
     events: [{ occurredAt: "2026-09-01T10:00:00Z", model: "claude-sonnet", totalTokens: 600, estimatedApiValueUsdMicros: 6_000 }],
@@ -213,7 +230,132 @@ function sessionDetail(page = sessionPage()): SessionDetail {
   };
 }
 
+function cacheReport(overrides: Partial<CacheEfficiencyReport["summary"]> = {}): CacheEfficiencyReport {
+  const summary = {
+    semanticCoverage: "complete" as const,
+    freshInputTokens: 4_800_000,
+    cachedInputTokens: 18_400_000,
+    cacheWriteTokens: 1_600_000,
+    cacheWrite5mTokens: 840_000,
+    cacheWrite1hTokens: 210_000,
+    cacheWriteUnspecifiedTokens: 550_000,
+    normalizedInputContextTokens: 24_800_000,
+    reuseShareBps: 7_419,
+    apiEquivalentCacheImpactUsdMicros: 21_840_000,
+    cachePricingCoverage: "partial" as const,
+    measuredEventCount: 42,
+    ...overrides,
+  };
+  const row = { key: "claude:claude_code", label: "Claude Code", provider: "claude", source: "claude_code", model: null, project: null, ...summary };
+  return {
+    range: "7d",
+    providerFilter: null,
+    availableProviders: ["claude", "codex"],
+    summary,
+    byProvider: [row],
+    byModel: [{ ...row, key: "claude:sonnet", label: "Claude Sonnet 5", source: null, model: "Claude Sonnet 5" }],
+    byProject: [{ ...row, key: "ArcMeter", label: "ArcMeter", provider: null, source: null, project: "ArcMeter" }],
+  };
+}
+
 describe("important product states", () => {
+  it("renders cache reuse, canonical counters, TTL detail, partial coverage, and breakdowns", () => {
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={cacheReport()} />);
+    expect(screen.getByRole("heading", { name: "Measured input reuse" })).toBeInTheDocument();
+    expect(screen.getAllByText("74.2%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("18.4M").length).toBeGreaterThan(0);
+    expect(screen.getByText("4.8M")).toBeInTheDocument();
+    expect(screen.getByText("5-minute")).toBeInTheDocument();
+    expect(screen.getByText("1-hour")).toBeInTheDocument();
+    expect(screen.getByText("Unspecified")).toBeInTheDocument();
+    expect(screen.getByText(/Partial pricing coverage/)).toBeInTheDocument();
+    expect(screen.getByText("Claude Sonnet 5")).toBeInTheDocument();
+    expect(screen.getByText("ArcMeter")).toBeInTheDocument();
+  });
+
+  it("shows partial semantics and negative cache creation impact without calling tokens saved", () => {
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={cacheReport({ semanticCoverage: "partial", apiEquivalentCacheImpactUsdMicros: -420_000, cachePricingCoverage: "complete" })} />);
+    expect(screen.getByText(/Partial semantic coverage/)).toBeInTheDocument();
+    expect(screen.getByText(/higher/)).toBeInTheDocument();
+    expect(screen.getByText(/Cache creation exceeded reuse/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/tokens saved/i);
+  });
+
+  it("distinguishes no measured cache events from measured events without cache telemetry", () => {
+    const empty = cacheReport({ measuredEventCount: 0, cachedInputTokens: 0, cacheWriteTokens: 0 });
+    const view = render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={empty} />);
+    expect(screen.getByText("No measured cache activity yet.")).toBeInTheDocument();
+    view.unmount();
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={cacheReport({ measuredEventCount: 4, cachedInputTokens: 0, cacheWriteTokens: 0 })} />);
+    expect(screen.getByText("Cache telemetry is unavailable for the providers in this range.")).toBeInTheDocument();
+  });
+
+  it("keeps every range provider available while switching directly between filtered analytics", async () => {
+    const initial = { ...cacheReport(), availableProviders: ["grok", "codex", "claude", "codex"] };
+    const loadCache = vi.fn((range: CacheEfficiencyReport["range"], provider?: string) => Promise.resolve({
+      ...cacheReport({ cachedInputTokens: provider === "claude" ? 222 : 333 }),
+      range,
+      providerFilter: provider ?? null,
+      availableProviders: ["grok", "codex", "claude"],
+    }));
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={initial} loadCache={loadCache} />);
+
+    const providerSelect = screen.getByLabelText("Cache provider");
+    expect(within(providerSelect).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All providers",
+      "Claude Code CLI",
+      "Codex",
+      "Grok Build",
+    ]);
+
+    fireEvent.change(providerSelect, { target: { value: "claude" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(1, "7d", "claude"));
+    expect(providerSelect).toHaveValue("claude");
+    expect(within(providerSelect).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All providers",
+      "Claude Code CLI",
+      "Codex",
+      "Grok Build",
+    ]);
+    expect(screen.getAllByText("222").length).toBeGreaterThan(0);
+
+    fireEvent.change(providerSelect, { target: { value: "grok" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(2, "7d", "grok"));
+    expect(providerSelect).toHaveValue("grok");
+    expect(loadCache).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves a selected provider when a new range has no matching rows", async () => {
+    const initial = { ...cacheReport(), providerFilter: "claude", availableProviders: ["claude", "codex", "grok"] };
+    const loadCache = vi.fn((range: CacheEfficiencyReport["range"], provider?: string) => Promise.resolve({
+      ...cacheReport({ measuredEventCount: 0, cachedInputTokens: 0, cacheWriteTokens: 0 }),
+      range,
+      providerFilter: provider ?? null,
+      availableProviders: ["grok", "codex"],
+      byProvider: [],
+      byModel: [],
+      byProject: [],
+    }));
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={initial} loadCache={loadCache} />);
+
+    fireEvent.change(screen.getByLabelText("Cache date range"), { target: { value: "30d" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(1, "30d", "claude"));
+    const providerSelect = screen.getByLabelText("Cache provider");
+    expect(providerSelect).toHaveValue("claude");
+    expect(within(providerSelect).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All providers",
+      "Claude Code CLI",
+      "Codex",
+      "Grok Build",
+    ]);
+    expect(screen.getByText("No measured cache activity yet.")).toBeInTheDocument();
+
+    fireEvent.change(providerSelect, { target: { value: "codex" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(2, "30d", "codex"));
+    expect(providerSelect).toHaveValue("codex");
+    expect(loadCache).toHaveBeenCalledTimes(2);
+  });
+
   it("shows gathering, active, reset-first, flat, stale, and reached quota pace states", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
@@ -420,6 +562,33 @@ describe("important product states", () => {
     expect(screen.getByText(/no URL, title, prompt, response, or token count stored/i)).toBeInTheDocument();
   });
 
+  it("shows Codex aggregate cache writes without inventing a TTL", () => {
+    render(<Activity items={[{
+      id: "c".repeat(64),
+      provider: "codex",
+      source: "codex_cli",
+      occurredAt: now,
+      model: "gpt-5.6-sol",
+      projectName: "ArcMeter",
+      totalTokens: 120,
+      inputTokens: 100,
+      cachedInputTokens: 60,
+      cacheWriteTokens: 20,
+      cacheWrite5mTokens: 0,
+      cacheWrite1hTokens: 0,
+      outputTokens: 20,
+      reasoningTokens: 5,
+      nativeCostUsdTicks: null,
+      estimatedApiValueUsdMicros: null,
+      measurementKind: "measured",
+      deviceId: "device-1",
+      deviceName: "Windows Business Desktop",
+    }]} />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Cache write")).toBeInTheDocument();
+    expect(screen.queryByText(/Cache write \((5m|1h)\)/)).not.toBeInTheDocument();
+  });
+
   it("labels Grok subset counters and recorded cost without calling it an estimate", () => {
     render(
       <Activity items={[{
@@ -592,6 +761,8 @@ describe("important product states", () => {
   });
 
   it("groups measured sessions, keeps native IDs opaque, and loads detailed token semantics on demand", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-01T18:00:00Z"));
     const page = sessionPage();
     const loadDetail = vi.fn(() => Promise.resolve(sessionDetail(page)));
     render(<Sessions initialPage={page} loadDetail={loadDetail} />);

@@ -98,6 +98,7 @@ pub struct SessionSummary {
 #[serde(rename_all = "camelCase")]
 pub struct SessionDetail {
     pub session: SessionSummary,
+    pub cache: crate::cache_efficiency::CacheEfficiencySummary,
     pub models: Vec<SessionModel>,
     pub devices: Vec<String>,
     pub events: Vec<SessionTimelineItem>,
@@ -242,6 +243,8 @@ pub fn session_detail(
         limit.clamp(1, EVENT_PAGE_SIZE),
         offset.max(0),
     )?;
+    let cache =
+        crate::cache_efficiency::session_summary(database, &provider, &source, &native_session_id)?;
     Ok(SessionDetail {
         session: SessionSummary {
             primary_model: models
@@ -256,6 +259,7 @@ pub fn session_detail(
                 .unwrap_or_else(|| "Unknown device".into()),
             ..summary
         },
+        cache,
         models,
         devices,
         events,

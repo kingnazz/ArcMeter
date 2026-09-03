@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, SessionDetail, SessionPage, SessionQuery, Subscription, SyncReport } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, CacheEfficiencyReport, CacheRange, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, SessionDetail, SessionPage, SessionQuery, Subscription, SyncReport } from "../types";
 
 const previewNow = new Date().toISOString();
 const unavailableDevice: Device = {
@@ -124,6 +124,32 @@ export async function signOut(): Promise<AuthStatus> {
 
 export async function syncCloudNow(): Promise<SyncReport> {
   return invoke<SyncReport>("sync_now");
+}
+
+export async function getCacheEfficiency(range: CacheRange, provider?: string): Promise<CacheEfficiencyReport> {
+  if (!isTauri()) return {
+    range,
+    providerFilter: provider ?? null,
+    availableProviders: [],
+    summary: {
+      semanticCoverage: "unavailable",
+      freshInputTokens: null,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      cacheWrite5mTokens: 0,
+      cacheWrite1hTokens: 0,
+      cacheWriteUnspecifiedTokens: 0,
+      normalizedInputContextTokens: null,
+      reuseShareBps: null,
+      apiEquivalentCacheImpactUsdMicros: null,
+      cachePricingCoverage: "unavailable",
+      measuredEventCount: 0,
+    },
+    byProvider: [],
+    byModel: [],
+    byProject: [],
+  };
+  return invoke<CacheEfficiencyReport>("cache_efficiency", { range, provider });
 }
 
 export async function getSessionPage(query: SessionQuery): Promise<SessionPage> {

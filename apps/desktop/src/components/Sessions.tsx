@@ -186,6 +186,7 @@ function SessionDetailPanel({ session, detail, loading, loadingMoreEvents, onClo
         <div className="session-detail-overview"><div><span>Duration</span><strong>{formatSessionDuration(shown.durationSeconds)}</strong></div><div><span>Events</span><strong>{shown.eventCount.toLocaleString()}</strong></div><div><span>Devices</span><strong>{shown.deviceCount.toLocaleString()}</strong></div></div>
         <DetailSection title="Models"><div className="session-model-list">{detail.models.map((model) => <div key={model.model}><span>{model.model}</span><small>{model.eventCount} events</small><strong>{formatTokens(model.tokens)}</strong></div>)}</div></DetailSection>
         <DetailSection title="Token composition"><div className="session-token-grid"><TokenDetail label={shown.provider === "grok" ? "Input (cache included)" : shown.provider === "claude" ? "Fresh input (cache separate)" : "Input"} value={shown.inputTokens} /><TokenDetail label={shown.provider === "claude" ? "Cache read" : "Cached input"} value={shown.cachedInputTokens} /><TokenDetail label="Cache write" value={shown.cacheWriteTokens} /><TokenDetail label="Cache write (5m)" value={shown.cacheWrite5mTokens} /><TokenDetail label="Cache write (1h)" value={shown.cacheWrite1hTokens} /><TokenDetail label="Output" value={shown.outputTokens} /><TokenDetail label={shown.provider === "claude" || shown.provider === "grok" ? "Reasoning (included in output)" : "Reasoning"} value={shown.reasoningTokens} /></div></DetailSection>
+        <DetailSection title="Cache"><div className="session-cache-summary"><div className="session-cache-reuse"><span>Input reuse</span><strong>{formatReuse(detail.cache.reuseShareBps)}</strong><small>{semanticDescription(detail.cache.semanticCoverage)}</small></div><div className="session-token-grid"><TokenDetail label="Fresh input" value={detail.cache.freshInputTokens} /><TokenDetail label="Cache read" value={detail.cache.cachedInputTokens} /><TokenDetail label="Cache write" value={detail.cache.cacheWriteTokens} />{detail.cache.cacheWrite5mTokens > 0 ? <TokenDetail label="5m writes" value={detail.cache.cacheWrite5mTokens} /> : null}{detail.cache.cacheWrite1hTokens > 0 ? <TokenDetail label="1h writes" value={detail.cache.cacheWrite1hTokens} /> : null}{shown.provider !== "grok" && detail.cache.cacheWriteUnspecifiedTokens > 0 ? <TokenDetail label="Unspecified writes" value={detail.cache.cacheWriteUnspecifiedTokens} /> : null}</div></div></DetailSection>
         <DetailSection title="Value"><div className="session-value-list"><div><span>API-equivalent value</span><strong>{formatUsdMicrosPrecise(shown.estimatedApiValueUsdMicros)}</strong><small>{coverageDescription(shown.pricingCoverage)}</small></div>{shown.nativeCostUsdTicks !== null ? <div><span>Recorded provider cost</span><strong>{formatUsdTicks(shown.nativeCostUsdTicks)}</strong><small>Provider-recorded; not an ArcMeter estimate.</small></div> : null}</div></DetailSection>
         <DetailSection title="Devices"><div className="session-device-list">{detail.devices.map((device) => <span key={device}>{device}</span>)}</div></DetailSection>
         <DetailSection title="Event timeline"><div className="session-event-list">{detail.events.map((event, index) => <div key={`${event.occurredAt}-${event.model}-${index}`}><time>{formatActivityTime(event.occurredAt)}</time><span>{event.model}</span><strong>{formatTokens(event.totalTokens)}</strong>{event.estimatedApiValueUsdMicros !== null ? <small>{formatUsdMicrosPrecise(event.estimatedApiValueUsdMicros)}</small> : null}</div>)}</div>{detail.eventsHasMore ? <button type="button" className="text-button" disabled={loadingMoreEvents} onClick={onLoadMoreEvents}>{loadingMoreEvents ? "Loading events…" : "Load more events"}</button> : null}</DetailSection>
@@ -202,8 +203,8 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
   return <section className="session-detail-section"><h3>{title}</h3>{children}</section>;
 }
 
-function TokenDetail({ label, value }: { label: string; value: number }) {
-  return <div><span>{label}</span><strong>{formatTokenDetail(value)}</strong></div>;
+function TokenDetail({ label, value }: { label: string; value: number | null }) {
+  return <div><span>{label}</span><strong>{value === null ? "Unavailable" : formatTokenDetail(value)}</strong></div>;
 }
 
 function groupSessions(sessions: SessionSummary[]): [string, SessionSummary[]][] {
@@ -242,6 +243,14 @@ function valueLabel(session: SessionSummary): string {
 
 function coverageDescription(coverage: SessionSummary["pricingCoverage"]): string {
   return coverage === "complete" ? "Exact pricing covers every token-bearing event." : coverage === "partial" ? "Partial pricing coverage; priced subtotal excludes unavailable components." : "No safe pricing was available for this session.";
+}
+
+function formatReuse(value: number | null): string {
+  return value === null ? "Unavailable" : `${(value / 100).toFixed(1)}%`;
+}
+
+function semanticDescription(coverage: SessionDetail["cache"]["semanticCoverage"]): string {
+  return coverage === "complete" ? "Authoritative normalized input semantics." : coverage === "partial" ? "Partial semantic coverage; ratio uses the known subset." : "Reuse share unavailable for this source.";
 }
 
 function queryFor(range: SessionQuery["range"], provider: string, search: string, sort: NonNullable<SessionQuery["sort"]>, offset: number): SessionQuery {

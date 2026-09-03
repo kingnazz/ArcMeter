@@ -143,6 +143,43 @@ export interface SyncReport {
   completedAt: string;
 }
 
+export type CacheRange = "today" | "7d" | "30d" | "all";
+export type CacheCoverage = "complete" | "partial" | "unavailable";
+
+export interface CacheEfficiencySummary {
+  semanticCoverage: CacheCoverage;
+  freshInputTokens: number | null;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  cacheWriteUnspecifiedTokens: number;
+  normalizedInputContextTokens: number | null;
+  reuseShareBps: number | null;
+  apiEquivalentCacheImpactUsdMicros: number | null;
+  cachePricingCoverage: CacheCoverage;
+  measuredEventCount: number;
+}
+
+export interface CacheEfficiencyBreakdown extends CacheEfficiencySummary {
+  key: string;
+  label: string;
+  provider: string | null;
+  source: string | null;
+  model: string | null;
+  project: string | null;
+}
+
+export interface CacheEfficiencyReport {
+  range: CacheRange;
+  providerFilter: string | null;
+  availableProviders: string[];
+  summary: CacheEfficiencySummary;
+  byProvider: CacheEfficiencyBreakdown[];
+  byModel: CacheEfficiencyBreakdown[];
+  byProject: CacheEfficiencyBreakdown[];
+}
+
 export type SessionPricingCoverage = "complete" | "partial" | "unavailable";
 
 export interface SessionSummary {
@@ -200,6 +237,7 @@ export interface SessionTimelineItem {
 
 export interface SessionDetail {
   session: SessionSummary;
+  cache: CacheEfficiencySummary;
   models: SessionModel[];
   devices: string[];
   events: SessionTimelineItem[];

@@ -112,7 +112,11 @@ pub fn parse_reader<R: BufRead>(reader: R, device_id: &str) -> CollectorOutput {
                 let tokens = TokenCounts {
                     input_tokens: value_i64(usage.get("input_tokens")),
                     cached_input_tokens: value_i64(usage.get("cached_input_tokens")),
-                    cache_write_tokens: 0,
+                    cache_write_tokens: value_i64(
+                        usage
+                            .get("cache_write_input_tokens")
+                            .or_else(|| usage.get("cacheWriteInputTokens")),
+                    ),
                     cache_write_5m_tokens: 0,
                     cache_write_1h_tokens: 0,
                     output_tokens: value_i64(usage.get("output_tokens")),
@@ -164,6 +168,7 @@ mod tests {
     use std::io::Cursor;
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/codex.jsonl");
+    const CACHE_WRITE_FIXTURE: &str = include_str!("../../tests/fixtures/codex_cache_write.jsonl");
 
     #[test]
     fn fixture_is_resilient_and_deduplicated() {
@@ -172,6 +177,7 @@ mod tests {
         assert_eq!(output.events[0].tokens.total_tokens, 120);
         assert_eq!(output.events[0].project_name.as_deref(), Some("ArcMeter"));
         assert_eq!(output.events[1].tokens.cached_input_tokens, 0);
+        assert_eq!(output.events[1].tokens.cache_write_tokens, 0);
         assert_eq!(output.events[1].tokens.total_tokens, 12);
         assert!(
             output
@@ -211,5 +217,33 @@ mod tests {
                 .map(|event| &event.id)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn current_codex_token_usage_captures_aggregate_cache_writes() {
+        let output = parse_reader(Cursor::new(CACHE_WRITE_FIXTURE), "device");
+        assert_eq!(output.events.len(), 1);
+        let tokens = &output.events[0].tokens;
+        assert_eq!(tokens.input_tokens, 58_697);
+        assert_eq!(tokens.cached_input_tokens, 40_000);
+        assert_eq!(tokens.cache_write_tokens, 12_000);
+        assert_eq!(tokens.cache_write_5m_tokens, 0);
+        assert_eq!(tokens.cache_write_1h_tokens, 0);
+        assert_eq!(tokens.output_tokens, 227);
+        assert_eq!(tokens.reasoning_tokens, 9);
+        assert_eq!(tokens.total_tokens, 58_924);
+    }
+
+    #[test]
+    fn camel_case_cache_write_field_is_supported_without_ttl_attribution() {
+        let record = r#"{"timestamp":"2026-08-20T12:00:00Z","ordinal":2,"type":"session_meta","payload":{"id":"session"}}
+{"timestamp":"2026-08-20T12:00:01Z","ordinal":3,"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":60,"cacheWriteInputTokens":20,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}}}}"#;
+        let output = parse_reader(Cursor::new(record), "device");
+        assert_eq!(output.events.len(), 1);
+        assert_eq!(output.events[0].tokens.cache_write_tokens, 20);
+        assert_eq!(output.events[0].tokens.total_tokens, 120);
+        assert_eq!(output.events[0].tokens.input_tokens, 100);
+        assert_eq!(output.events[0].tokens.cache_write_5m_tokens, 0);
+        assert_eq!(output.events[0].tokens.cache_write_1h_tokens, 0);
     }
 }
