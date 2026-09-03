@@ -156,12 +156,11 @@ impl Accumulator {
             CoverageState::Partial
         };
         let known = self.known_semantics_events > 0;
-        let reuse_share_bps = (known && self.normalized_input_context_tokens > 0).then(|| {
-            basis_points(
+        let reuse_share_bps =
+            (known && self.normalized_input_context_tokens > 0).then_some(basis_points(
                 self.known_cached_input_tokens,
                 self.normalized_input_context_tokens,
-            )
-        });
+            ));
         let cache_pricing_coverage = if self.impact_valued_events == 0 {
             CoverageState::Unavailable
         } else if self.impact_complete_events == self.impact_relevant_events {

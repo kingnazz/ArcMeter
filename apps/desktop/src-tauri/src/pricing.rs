@@ -231,7 +231,7 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
             &event.model,
             &event.occurred_at,
             &event.tokens,
-        )?;
+        );
         if event.previous_value == value && event.previous_status == status {
             continue;
         }
@@ -286,7 +286,7 @@ pub fn price_usage_events(database: &Database, events: &mut [UsageEvent]) -> Dat
             model,
             &event.occurred_at.to_rfc3339(),
             &event.tokens,
-        )?;
+        );
         event.estimated_api_value_usd_micros = value;
         event.pricing_status = status.into();
     }
