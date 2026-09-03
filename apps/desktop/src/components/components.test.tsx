@@ -562,6 +562,33 @@ describe("important product states", () => {
     expect(screen.getByText(/no URL, title, prompt, response, or token count stored/i)).toBeInTheDocument();
   });
 
+  it("shows Codex aggregate cache writes without inventing a TTL", () => {
+    render(<Activity items={[{
+      id: "c".repeat(64),
+      provider: "codex",
+      source: "codex_cli",
+      occurredAt: now,
+      model: "gpt-5.6-sol",
+      projectName: "ArcMeter",
+      totalTokens: 120,
+      inputTokens: 100,
+      cachedInputTokens: 60,
+      cacheWriteTokens: 20,
+      cacheWrite5mTokens: 0,
+      cacheWrite1hTokens: 0,
+      outputTokens: 20,
+      reasoningTokens: 5,
+      nativeCostUsdTicks: null,
+      estimatedApiValueUsdMicros: null,
+      measurementKind: "measured",
+      deviceId: "device-1",
+      deviceName: "Windows Business Desktop",
+    }]} />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    expect(screen.getByText("Cache write")).toBeInTheDocument();
+    expect(screen.queryByText(/Cache write \((5m|1h)\)/)).not.toBeInTheDocument();
+  });
+
   it("labels Grok subset counters and recorded cost without calling it an estimate", () => {
     render(
       <Activity items={[{

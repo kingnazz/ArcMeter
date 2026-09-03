@@ -287,6 +287,107 @@ impl Database {
         Ok(inserted)
     }
 
+    /// Inserts Codex events and enriches an existing identical event with a
+    /// newly observed aggregate cache-write counter. Other measured counters
+    /// remain authoritative in the stored row and are never replaced here.
+    pub fn upsert_codex_cache_write_events(
+        &self,
+        events: &[UsageEvent],
+    ) -> Result<EventWriteSummary> {
+        if events.is_empty() {
+            return Ok(EventWriteSummary::default());
+        }
+        for event in events {
+            validate_codex_cache_write_event(event)?;
+        }
+
+        let mut priced_events = events.to_vec();
+        crate::pricing::price_usage_events(self, &mut priced_events)?;
+
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut summary = EventWriteSummary::default();
+        {
+            let mut insert = transaction.prepare_cached(INSERT_USAGE_EVENT_SQL)?;
+            for event in &priced_events {
+                if insert_usage_event(&mut insert, event)? > 0 {
+                    summary.inserted += 1;
+                    continue;
+                }
+
+                let stored = transaction
+                    .query_row(
+                        "SELECT provider, source, source_type, native_session_id, native_event_id,
+                                device_id, measurement_kind, occurred_at, model, project_name,
+                                input_tokens, cached_input_tokens, cache_write_tokens,
+                                cache_write_5m_tokens, cache_write_1h_tokens, output_tokens,
+                                reasoning_tokens, total_tokens, updated_at, superseded_by_event_id
+                         FROM usage_events WHERE id = ?1",
+                        [&event.id],
+                        map_stored_snapshot,
+                    )
+                    .optional()?
+                    .ok_or_else(|| {
+                        DatabaseError::Invalid(format!(
+                            "conflicting Codex event {} disappeared during persistence",
+                            event.id
+                        ))
+                    })?;
+                validate_stored_codex_identity(event, &stored)?;
+
+                // The parser upgrade only enriches the new authoritative field.
+                // In particular, a replay from an older/missing representation
+                // can never regress a known write to zero.
+                if event.tokens.cache_write_tokens <= stored.tokens.cache_write_tokens {
+                    continue;
+                }
+                let updated_at = std::cmp::max(
+                    Utc::now(),
+                    stored
+                        .updated_at
+                        .checked_add_signed(TimeDelta::microseconds(1))
+                        .unwrap_or(stored.updated_at),
+                );
+                let updated = transaction.execute(
+                    "UPDATE usage_events SET
+                       cache_write_tokens = ?8,
+                       estimated_api_value_usd_micros = ?9,
+                       pricing_status = ?10,
+                       updated_at = ?11,
+                       sync_status = 'pending',
+                       last_sync_error = NULL
+                     WHERE id = ?1 AND provider = ?2 AND source = ?3 AND source_type = ?4
+                       AND native_session_id = ?5 AND native_event_id = ?6 AND device_id = ?7
+                       AND measurement_kind = ?12 AND superseded_by_event_id IS NULL
+                       AND cache_write_tokens < ?8",
+                    params![
+                        event.id,
+                        event.provider,
+                        event.source,
+                        event.source_type.as_str(),
+                        event.native_session_id,
+                        event.native_event_id,
+                        event.device_id,
+                        event.tokens.cache_write_tokens,
+                        event.estimated_api_value_usd_micros,
+                        event.pricing_status,
+                        updated_at.to_rfc3339(),
+                        event.measurement_kind.as_str(),
+                    ],
+                )?;
+                if updated != 1 {
+                    return Err(DatabaseError::Invalid(format!(
+                        "Codex event {} failed its constrained cache-write update",
+                        event.id
+                    )));
+                }
+                summary.updated += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(summary)
+    }
+
     /// Inserts new Claude request events and revises an existing v2 request row only
     /// when the incoming cumulative snapshot is strictly more authoritative.
     pub fn upsert_claude_request_events(&self, events: &[UsageEvent]) -> Result<EventWriteSummary> {
@@ -840,6 +941,74 @@ fn insert_usage_event(
     ])
 }
 
+fn map_stored_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSnapshot> {
+    Ok(StoredSnapshot {
+        provider: row.get(0)?,
+        source: row.get(1)?,
+        source_type: row.get(2)?,
+        native_session_id: row.get(3)?,
+        native_event_id: row.get(4)?,
+        device_id: row.get(5)?,
+        measurement_kind: row.get(6)?,
+        occurred_at: parse_datetime(row.get(7)?, 7)?,
+        model: row.get(8)?,
+        project_name: row.get(9)?,
+        tokens: TokenCounts {
+            input_tokens: row.get(10)?,
+            cached_input_tokens: row.get(11)?,
+            cache_write_tokens: row.get(12)?,
+            cache_write_5m_tokens: row.get(13)?,
+            cache_write_1h_tokens: row.get(14)?,
+            output_tokens: row.get(15)?,
+            reasoning_tokens: row.get(16)?,
+            total_tokens: row.get(17)?,
+        },
+        updated_at: parse_datetime(row.get(18)?, 18)?,
+        superseded_by_event_id: row.get(19)?,
+    })
+}
+
+fn validate_codex_cache_write_event(event: &UsageEvent) -> Result<()> {
+    let expected_id = deterministic_event_id(
+        &event.provider,
+        &event.native_session_id,
+        &event.native_event_id,
+    );
+    if event.provider != "codex"
+        || event.source != "codex_cli"
+        || event.source_type != SourceType::LocalCli
+        || event.measurement_kind != MeasurementKind::Measured
+        || event.native_session_id.is_empty()
+        || event.native_event_id.is_empty()
+        || event.id != expected_id
+        || event.tokens.cache_write_5m_tokens != 0
+        || event.tokens.cache_write_1h_tokens != 0
+    {
+        return Err(DatabaseError::Invalid(
+            "Codex cache-write persistence accepts only canonical aggregate-write events".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stored_codex_identity(event: &UsageEvent, stored: &StoredSnapshot) -> Result<()> {
+    if stored.provider != event.provider
+        || stored.source != event.source
+        || stored.source_type != event.source_type.as_str()
+        || stored.native_session_id != event.native_session_id
+        || stored.native_event_id != event.native_event_id
+        || stored.device_id != event.device_id
+        || stored.measurement_kind != event.measurement_kind.as_str()
+        || stored.superseded_by_event_id.is_some()
+    {
+        return Err(DatabaseError::Invalid(format!(
+            "Codex event {} conflicts with a different stored identity",
+            event.id
+        )));
+    }
+    Ok(())
+}
+
 fn validate_claude_request_event(event: &UsageEvent) -> Result<()> {
     let expected_id = deterministic_event_id(
         &event.provider,
@@ -1104,6 +1273,213 @@ mod tests {
             0
         );
         assert_eq!(database.event_count_and_tokens().unwrap(), (1, 120));
+    }
+
+    #[test]
+    fn codex_cache_write_enrichment_is_monotonic_repriced_and_requeued() {
+        let (_directory, database, device) = database();
+        let occurred_at = "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let original = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "session",
+            "ordinal:1",
+            occurred_at,
+            Some("gpt-5.6-sol".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 60,
+                output_tokens: 20,
+                reasoning_tokens: 5,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            device.id.clone(),
+        )
+        .with_native_cost_usd_ticks(Some(123));
+        let event_id = original.id.clone();
+        assert_eq!(
+            database
+                .insert_usage_events(std::slice::from_ref(&original))
+                .unwrap(),
+            1
+        );
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                "UPDATE usage_events SET sync_status = 'synced', updated_at = '2026-08-29T00:00:00Z'
+                 WHERE id = ?1",
+                [&event_id],
+            )
+            .unwrap();
+
+        let enriched = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "session",
+            "ordinal:1",
+            occurred_at,
+            Some("gpt-5.6-sol".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 60,
+                cache_write_tokens: 20,
+                output_tokens: 20,
+                reasoning_tokens: 5,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        let summary = database
+            .upsert_codex_cache_write_events(std::slice::from_ref(&enriched))
+            .unwrap();
+        assert_eq!(
+            summary,
+            EventWriteSummary {
+                inserted: 0,
+                updated: 1
+            }
+        );
+
+        let connection = Connection::open(database.path()).unwrap();
+        let stored: (i64, i64, i64, i64, i64, Option<i64>, String, String) = connection
+            .query_row(
+                "SELECT input_tokens, cached_input_tokens, cache_write_tokens,
+                        cache_write_5m_tokens, cache_write_1h_tokens,
+                        estimated_api_value_usd_micros, pricing_status, sync_status
+                 FROM usage_events WHERE id = ?1",
+                [&event_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (stored.0, stored.1, stored.2, stored.3, stored.4),
+            (100, 60, 20, 0, 0)
+        );
+        assert_eq!(stored.5, Some(504));
+        assert_eq!(stored.6, "partial");
+        assert_eq!(stored.7, "pending");
+        let native_cost: Option<i64> = connection
+            .query_row(
+                "SELECT native_cost_usd_ticks FROM usage_events WHERE id = ?1",
+                [&event_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(native_cost, Some(123));
+        drop(connection);
+
+        let mut old = enriched.clone();
+        old.tokens.cache_write_tokens = 0;
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute(
+                "UPDATE usage_events SET sync_status = 'synced' WHERE id = ?1",
+                [&event_id],
+            )
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            database.upsert_codex_cache_write_events(&[old]).unwrap(),
+            EventWriteSummary::default()
+        );
+        assert_eq!(
+            Connection::open(database.path())
+                .unwrap()
+                .query_row(
+                    "SELECT cache_write_tokens, sync_status FROM usage_events WHERE id = ?1",
+                    [&event_id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            (20, "synced".into())
+        );
+
+        assert_eq!(
+            database
+                .upsert_codex_cache_write_events(std::slice::from_ref(&enriched))
+                .unwrap(),
+            EventWriteSummary::default()
+        );
+    }
+
+    #[test]
+    fn codex_cache_write_enrichment_rejects_identity_mismatch() {
+        let (_directory, database, device) = database();
+        let device_id = device.id.clone();
+        let event = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "session",
+            "ordinal:1",
+            Utc::now(),
+            Some("gpt-5.6-sol".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cache_write_tokens: 20,
+                total_tokens: 100,
+                ..Default::default()
+            },
+            device_id.clone(),
+        );
+        let event_id = event.id.clone();
+        database
+            .insert_usage_events(std::slice::from_ref(&event))
+            .unwrap();
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                "UPDATE usage_events SET native_event_id = 'different-event' WHERE id = ?1",
+                [&event_id],
+            )
+            .unwrap();
+
+        let replacement = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "session",
+            "ordinal:1",
+            event.occurred_at,
+            Some("gpt-5.6-sol".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cache_write_tokens: 30,
+                total_tokens: 100,
+                ..Default::default()
+            },
+            device_id,
+        );
+        let error = database
+            .upsert_codex_cache_write_events(std::slice::from_ref(&replacement))
+            .unwrap_err();
+        assert!(error.to_string().contains("different stored identity"));
+        assert_eq!(
+            Connection::open(database.path())
+                .unwrap()
+                .query_row(
+                    "SELECT native_event_id, cache_write_tokens FROM usage_events WHERE id = ?1",
+                    [&event_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            ("different-event".into(), 20)
+        );
     }
 
     #[test]

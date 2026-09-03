@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 const DEFAULT_PARSER_VERSION: i64 = 1;
+const CODEX_PARSER_VERSION: i64 = 2;
 const CLAUDE_PARSER_VERSION: i64 = 2;
 const GROK_PARSER_VERSION: i64 = 2;
 
@@ -156,7 +157,11 @@ fn scan_provider(
                 None,
             ));
         }
-        let write_result = if persistence_succeeded && specification.provider == "claude" {
+        let write_result = if persistence_succeeded && specification.provider == "codex" {
+            database
+                .upsert_codex_cache_write_events(&output.events)
+                .map(|summary| summary.inserted)
+        } else if persistence_succeeded && specification.provider == "claude" {
             database
                 .upsert_claude_request_events(&output.events)
                 .map(|summary| summary.inserted)
@@ -285,6 +290,7 @@ fn scan_provider(
 
 fn parser_version(provider: &str) -> i64 {
     match provider {
+        "codex" => CODEX_PARSER_VERSION,
         "claude" => CLAUDE_PARSER_VERSION,
         "grok" => GROK_PARSER_VERSION,
         _ => DEFAULT_PARSER_VERSION,
@@ -644,6 +650,166 @@ mod tests {
         assert_eq!(second.measured_tokens, first.measured_tokens);
         assert_eq!(first.files_seen, 1);
         assert_eq!(first.measured_records, 9);
+    }
+
+    #[test]
+    fn codex_parser_upgrade_replays_once_and_enriches_existing_rows() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("codex");
+        std::fs::create_dir_all(&source).unwrap();
+        let session = source.join("session.jsonl");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex_cache_write.jsonl"),
+            &session,
+        )
+        .unwrap();
+        let database = Database::open(temporary.path().join("arcmeter.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let parsed = codex::parse_file(&session, &device.id);
+        let mut legacy = parsed.events[0].clone();
+        legacy.tokens.cache_write_tokens = 0;
+        database.insert_usage_events(&[legacy]).unwrap();
+
+        let metadata = std::fs::metadata(&session).unwrap();
+        let file_size = metadata.len() as i64;
+        let modified_at_ms = metadata
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        database
+            .save_collector_state(&CollectorState {
+                source_key: safe_path_key("codex", &session),
+                provider: "codex".into(),
+                safe_file_fingerprint: safe_file_fingerprint(&session, file_size, modified_at_ms),
+                file_size,
+                modified_at_ms,
+                last_processed_offset: file_size,
+                parser_version: 1,
+                last_scan_at: Utc::now(),
+                last_usage_at: parsed.events.iter().map(|event| event.occurred_at).max(),
+                status: "healthy".into(),
+                diagnostic: None,
+            })
+            .unwrap();
+
+        let first = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new("codex", "Codex", vec![source.clone()], &["jsonl"]),
+        );
+        assert_eq!(first.records_inserted, 0);
+        assert_eq!(first.measured_records, 1);
+        assert_eq!(first.cache_write_tokens, 12_000);
+        assert_eq!(
+            database
+                .collector_state(&safe_path_key("codex", &session))
+                .unwrap()
+                .unwrap()
+                .parser_version,
+            CODEX_PARSER_VERSION
+        );
+
+        let second = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new("codex", "Codex", vec![source], &["jsonl"]),
+        );
+        assert_eq!(second.records_seen, 0);
+        assert_eq!(second.records_inserted, 0);
+        assert_eq!(second.cache_write_tokens, 12_000);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1, 58_924));
+    }
+
+    #[test]
+    fn codex_parser_upgrade_handles_large_history_without_repeated_rescans() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("codex");
+        std::fs::create_dir_all(&source).unwrap();
+        let session = source.join("large-session.jsonl");
+        let mut history = String::from(
+            "{\"timestamp\":\"2026-08-27T12:00:00Z\",\"ordinal\":0,\"type\":\"session_meta\",\"payload\":{\"id\":\"large-session\"}}\n",
+        );
+        history.push_str(
+            "{\"timestamp\":\"2026-08-27T12:00:01Z\",\"ordinal\":1,\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"large-turn\",\"model\":\"gpt-5.6-sol\"}}\n",
+        );
+        for ordinal in 2..1_002 {
+            history.push_str(
+                &serde_json::json!({
+                    "timestamp": "2026-08-27T12:00:02Z",
+                    "ordinal": ordinal,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {"last_token_usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 60,
+                            "cache_write_input_tokens": 20,
+                            "output_tokens": 20,
+                            "reasoning_output_tokens": 5,
+                            "total_tokens": 120
+                        }}
+                    }
+                })
+                .to_string(),
+            );
+            history.push('\n');
+        }
+        std::fs::write(&session, history).unwrap();
+
+        let database = Database::open(temporary.path().join("arcmeter.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let parsed = codex::parse_file(&session, &device.id);
+        assert_eq!(parsed.events.len(), 1_000);
+        let mut legacy_events = parsed.events.clone();
+        for event in &mut legacy_events {
+            event.tokens.cache_write_tokens = 0;
+        }
+        database.insert_usage_events(&legacy_events).unwrap();
+
+        let metadata = std::fs::metadata(&session).unwrap();
+        let file_size = metadata.len() as i64;
+        let modified_at_ms = metadata
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        database
+            .save_collector_state(&CollectorState {
+                source_key: safe_path_key("codex", &session),
+                provider: "codex".into(),
+                safe_file_fingerprint: safe_file_fingerprint(&session, file_size, modified_at_ms),
+                file_size,
+                modified_at_ms,
+                last_processed_offset: file_size,
+                parser_version: 1,
+                last_scan_at: Utc::now(),
+                last_usage_at: parsed.events.iter().map(|event| event.occurred_at).max(),
+                status: "healthy".into(),
+                diagnostic: None,
+            })
+            .unwrap();
+
+        let first = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new("codex", "Codex", vec![source.clone()], &["jsonl"]),
+        );
+        assert_eq!(first.records_inserted, 0);
+        assert_eq!(first.measured_records, 1_000);
+        assert_eq!(first.cache_write_tokens, 20_000);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1_000, 120_000));
+
+        let second = scan_provider(
+            &database,
+            &device.id,
+            CollectorSpec::new("codex", "Codex", vec![source], &["jsonl"]),
+        );
+        assert_eq!(second.records_seen, 0);
+        assert_eq!(second.records_inserted, 0);
+        assert_eq!(database.event_count_and_tokens().unwrap(), (1_000, 120_000));
     }
 
     #[test]

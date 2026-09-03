@@ -533,6 +533,7 @@ mod tests {
             Some("ArcMeter".into()),
             TokenCounts {
                 input_tokens: 10,
+                cache_write_tokens: 3,
                 output_tokens: 2,
                 total_tokens: 12,
                 ..Default::default()
@@ -543,7 +544,7 @@ mod tests {
         database.insert_usage_events(&[local]).unwrap();
         let pending = pending_events(&database, 250).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0]["cache_write_tokens"], 0);
+        assert_eq!(pending[0]["cache_write_tokens"], 3);
         assert_eq!(pending[0]["cache_write_5m_tokens"], 0);
         assert_eq!(pending[0]["cache_write_1h_tokens"], 0);
         assert!(pending[0]["native_cost_usd_ticks"].is_null());

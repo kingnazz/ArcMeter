@@ -13,6 +13,8 @@ The provider filter is applied to the same bounded event query and never changes
 ArcMeter uses source-specific semantics established by the collectors and mirrored by versioned pricing metadata:
 
 - Codex CLI: `cache_included`. Codex `input_tokens` includes its cached-input counter.
+- Codex `cache_write_input_tokens` is retained as a generic cache-write counter;
+  it is not assigned to a 5-minute or 1-hour TTL.
 - Claude Code: `cache_additive`. Anthropic reports fresh input, cache reads, and cache creation separately.
 - Grok Build: `cache_included`. Its normalized input counter includes cached input; cache creation is an aggregate write with no invented TTL.
 - Gemini CLI: `cache_included` when `cachedContentTokenCount` is present. Ordinary input is never converted into cache activity.

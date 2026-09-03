@@ -92,12 +92,14 @@ Email/password authentication is used for V1 to avoid fragile native magic-link 
 
 Collectors discover standard cross-platform locations and supported environment overrides. Files are read-only. Unchanged files are skipped using local collector state; a changed file is safely replayed so parser context is reconstructed, while deterministic database identities prevent duplicates.
 
-Codex V1 uses the observed native JSONL structure:
+Codex V2 uses the observed native JSONL structure:
 
 - session identity from `session_meta.payload.session_id` or `id`
 - event identity from the top-level `ordinal`
 - model and sanitized project basename from `turn_context`
 - authoritative per-call counters from `event_msg/token_count.payload.info.last_token_usage`
+- aggregate cache writes from `last_token_usage.cache_write_input_tokens` (with a
+  camelCase compatibility form); Codex cache writes have no inferred TTL
 
 The fallback fingerprint is SHA-256 over the smallest reliable identity tuple. A collision is handled as the same event and logged through collector diagnostics; no totals are incremented.
 

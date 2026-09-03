@@ -19,7 +19,11 @@
 | `measurementKind` | `measured`, `estimated`, or `activity_only`. |
 | `deviceId` | Stable ArcMeter installation UUID. |
 
-Codex reports cached input as a subset of input and reasoning as a subset of output. The pricing engine subtracts cached input before applying the ordinary input rate and does not add reasoning twice when the pricing rule says it is included in output.
+Codex reports cached input as a subset of input, aggregate cache writes as a
+generic input counter, and reasoning as a subset of output. The pricing engine
+subtracts cached input and aggregate cache writes before applying the ordinary
+input rate, does not infer a cache-write TTL, and does not add reasoning twice
+when the pricing rule says it is included in output.
 
 Claude reports fresh input, cache reads, cache writes, and output as separate additive counters. `cacheWriteTokens` remains the authoritative aggregate; `cacheWrite5mTokens` and `cacheWrite1hTokens` preserve TTL detail when present. Claude reasoning detail is a subset of output and is never added to total tokens a second time.
 
