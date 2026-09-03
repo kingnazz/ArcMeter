@@ -429,7 +429,7 @@ fn insights(
     Ok(output)
 }
 
-fn range_start(range: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+pub(crate) fn range_start(range: &str, now: DateTime<Utc>) -> DateTime<Utc> {
     match range {
         "today" => local_day_start(now),
         "7d" => local_day_start(now) - Duration::days(6),

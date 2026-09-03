@@ -125,6 +125,54 @@ pub fn calculate_api_value(tokens: &TokenCounts, rule: &PricingRule) -> PricingR
     }
 }
 
+/// Compares the priced cache components with the same tokens charged at the
+/// already-selected rule's fresh-input rate. Output, reasoning, and native
+/// provider cost are deliberately outside this counterfactual.
+pub fn calculate_cache_impact(tokens: &TokenCounts, rule: &PricingRule) -> PricingResult {
+    let cache_write_5m = tokens.cache_write_5m_tokens.min(tokens.cache_write_tokens);
+    let cache_write_1h = tokens
+        .cache_write_1h_tokens
+        .min(tokens.cache_write_tokens.saturating_sub(cache_write_5m));
+    let unspecified_write = tokens
+        .cache_write_tokens
+        .saturating_sub(cache_write_5m)
+        .saturating_sub(cache_write_1h);
+    let mut impact = 0_i64;
+    let mut priced_components = 0_i64;
+    let mut missing_components = 0_i64;
+
+    for (component_tokens, actual_rate) in [
+        (
+            tokens.cached_input_tokens,
+            rule.cached_input_usd_micros_per_million,
+        ),
+        (cache_write_5m, rule.cache_write_5m_usd_micros_per_million),
+        (cache_write_1h, rule.cache_write_1h_usd_micros_per_million),
+    ] {
+        if component_tokens <= 0 {
+            continue;
+        }
+        if let Some(actual_rate) = actual_rate {
+            impact = impact.saturating_add(
+                priced(component_tokens, rule.input_usd_micros_per_million)
+                    .saturating_sub(priced(component_tokens, actual_rate)),
+            );
+            priced_components = priced_components.saturating_add(component_tokens);
+        } else {
+            missing_components = missing_components.saturating_add(component_tokens);
+        }
+    }
+    missing_components = missing_components.saturating_add(unspecified_write);
+
+    if priced_components == 0 {
+        PricingResult::Unavailable
+    } else if missing_components > 0 {
+        PricingResult::Partial(impact)
+    } else {
+        PricingResult::Available(impact)
+    }
+}
+
 fn add_optional_component(total: &mut i64, complete: &mut bool, tokens: i64, rate: Option<i64>) {
     if tokens <= 0 {
         return;
@@ -174,10 +222,11 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
     };
 
     let transaction = connection.transaction()?;
+    let rules = load_pricing_rules(&transaction)?;
     let mut changed = 0;
     for event in events {
-        let (value, status) = price_event_fields(
-            &transaction,
+        let (value, status) = price_event_fields_with_rules(
+            &rules,
             &event.provider,
             &event.model,
             &event.occurred_at,
@@ -202,6 +251,7 @@ pub fn reprice_events(database: &Database) -> DatabaseResult<usize> {
 /// Claude revision update its counters and derived value in one local write.
 pub fn price_usage_events(database: &Database, events: &mut [UsageEvent]) -> DatabaseResult<()> {
     let connection = Connection::open(database.path())?;
+    let rules = load_pricing_rules(&connection)?;
     for event in events {
         if event.model.is_none() {
             event.model = connection
@@ -230,8 +280,8 @@ pub fn price_usage_events(database: &Database, events: &mut [UsageEvent]) -> Dat
             event.pricing_status = "unavailable".into();
             continue;
         };
-        let (value, status) = price_event_fields(
-            &connection,
+        let (value, status) = price_event_fields_with_rules(
+            &rules,
             &event.provider,
             model,
             &event.occurred_at.to_rfc3339(),
@@ -243,23 +293,20 @@ pub fn price_usage_events(database: &Database, events: &mut [UsageEvent]) -> Dat
     Ok(())
 }
 
-fn price_event_fields(
-    connection: &Connection,
+fn price_event_fields_with_rules(
+    rules: &[PricingRule],
     provider: &str,
     model: &str,
     occurred_at: &str,
     tokens: &TokenCounts,
-) -> DatabaseResult<(Option<i64>, &'static str)> {
-    Ok(
-        match find_rule(connection, provider, model, occurred_at, tokens)?
-            .as_ref()
-            .map(|rule| calculate_api_value(tokens, rule))
-        {
-            Some(PricingResult::Available(value)) => (Some(value), "available"),
-            Some(PricingResult::Partial(value)) => (Some(value), "partial"),
-            _ => (None, "unavailable"),
-        },
-    )
+) -> (Option<i64>, &'static str) {
+    match select_pricing_rule(rules, provider, model, occurred_at, tokens)
+        .map(|rule| calculate_api_value(tokens, rule))
+    {
+        Some(PricingResult::Available(value)) => (Some(value), "available"),
+        Some(PricingResult::Partial(value)) => (Some(value), "partial"),
+        _ => (None, "unavailable"),
+    }
 }
 
 #[derive(Debug)]
@@ -273,6 +320,7 @@ struct PricingInput {
     previous_status: String,
 }
 
+#[cfg(test)]
 fn find_rule(
     connection: &Connection,
     provider: &str,
@@ -280,6 +328,11 @@ fn find_rule(
     occurred_at: &str,
     tokens: &TokenCounts,
 ) -> DatabaseResult<Option<PricingRule>> {
+    let rules = load_pricing_rules(connection)?;
+    Ok(select_pricing_rule(&rules, provider, model, occurred_at, tokens).cloned())
+}
+
+pub(crate) fn load_pricing_rules(connection: &Connection) -> DatabaseResult<Vec<PricingRule>> {
     let mut statement = connection.prepare(
         "SELECT provider, model_pattern, effective_from, min_input_tokens, max_input_tokens,
                 input_usd_micros_per_million, cached_input_usd_micros_per_million,
@@ -287,20 +340,12 @@ fn find_rule(
                 cache_write_1h_usd_micros_per_million, input_token_semantics,
                 output_usd_micros_per_million, reasoning_pricing_behavior,
                 reasoning_usd_micros_per_million, version
-         FROM pricing
-         WHERE provider = ?1 AND effective_from <= ?3
-         ORDER BY (model_pattern = ?2) DESC, length(model_pattern) DESC,
-                  effective_from DESC, min_input_tokens DESC, version DESC",
+         FROM pricing",
     )?;
-    let mut rows = statement.query(params![provider, model, occurred_at])?;
+    let mut rows = statement.query([])?;
+    let mut rules = Vec::new();
     while let Some(row) = rows.next()? {
         let model_pattern: String = row.get(1)?;
-        let model_matches = model_pattern
-            .strip_suffix('*')
-            .map_or(model_pattern == model, |prefix| model.starts_with(prefix));
-        if !model_matches {
-            continue;
-        }
         let effective_from: String = row.get(2)?;
         let effective_from = DateTime::parse_from_rfc3339(&effective_from)
             .map(|date| date.with_timezone(&Utc))
@@ -315,20 +360,8 @@ fn find_rule(
                 )));
             }
         };
-        let pricing_input_tokens = match input_token_semantics {
-            InputTokenSemantics::CacheIncluded => tokens.input_tokens,
-            InputTokenSemantics::CacheAdditive => tokens
-                .input_tokens
-                .saturating_add(tokens.cached_input_tokens)
-                .saturating_add(tokens.cache_write_tokens),
-        };
         let min_input_tokens: i64 = row.get(3)?;
         let max_input_tokens: Option<i64> = row.get(4)?;
-        if pricing_input_tokens < min_input_tokens
-            || max_input_tokens.is_some_and(|maximum| pricing_input_tokens > maximum)
-        {
-            continue;
-        }
         let reasoning_behavior: String = row.get(11)?;
         let reasoning_pricing_behavior = match reasoning_behavior.as_str() {
             "included_in_output" => ReasoningPricingBehavior::IncludedInOutput,
@@ -340,7 +373,7 @@ fn find_rule(
                 )));
             }
         };
-        return Ok(Some(PricingRule {
+        rules.push(PricingRule {
             provider: row.get(0)?,
             model_pattern,
             effective_from,
@@ -355,9 +388,57 @@ fn find_rule(
             reasoning_pricing_behavior,
             reasoning_usd_micros_per_million: row.get(12)?,
             version: row.get(13)?,
-        }));
+        });
     }
-    Ok(None)
+    Ok(rules)
+}
+
+pub(crate) fn select_pricing_rule<'a>(
+    rules: &'a [PricingRule],
+    provider: &str,
+    model: &str,
+    occurred_at: &str,
+    tokens: &TokenCounts,
+) -> Option<&'a PricingRule> {
+    let occurred_at = DateTime::parse_from_rfc3339(occurred_at)
+        .ok()?
+        .with_timezone(&Utc);
+    rules
+        .iter()
+        .filter(|rule| {
+            if rule.provider != provider || rule.effective_from > occurred_at {
+                return false;
+            }
+            let model_matches = rule
+                .model_pattern
+                .strip_suffix('*')
+                .map_or(rule.model_pattern == model, |prefix| {
+                    model.starts_with(prefix)
+                });
+            if !model_matches {
+                return false;
+            }
+            let pricing_input_tokens = match rule.input_token_semantics {
+                InputTokenSemantics::CacheIncluded => tokens.input_tokens,
+                InputTokenSemantics::CacheAdditive => tokens
+                    .input_tokens
+                    .saturating_add(tokens.cached_input_tokens)
+                    .saturating_add(tokens.cache_write_tokens),
+            };
+            pricing_input_tokens >= rule.min_input_tokens
+                && rule
+                    .max_input_tokens
+                    .is_none_or(|maximum| pricing_input_tokens <= maximum)
+        })
+        .max_by_key(|rule| {
+            (
+                rule.model_pattern == model,
+                rule.model_pattern.len(),
+                rule.effective_from.timestamp_millis(),
+                rule.min_input_tokens,
+                rule.version,
+            )
+        })
 }
 
 fn priced(tokens: i64, usd_micros_per_million: i64) -> i64 {
@@ -471,6 +552,55 @@ mod tests {
                 &claude
             ),
             PricingResult::Partial(1_000_000)
+        );
+    }
+
+    #[test]
+    fn cache_counterfactual_keeps_reads_positive_and_write_overhead_negative() {
+        let cached = TokenCounts {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            calculate_cache_impact(&cached, &rule()),
+            PricingResult::Available(750_000)
+        );
+        let writes = TokenCounts {
+            input_tokens: 1_000_000,
+            cache_write_tokens: 2_000_000,
+            cache_write_5m_tokens: 1_000_000,
+            cache_write_1h_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            calculate_cache_impact(&writes, &rule()),
+            PricingResult::Available(-1_250_000)
+        );
+    }
+
+    #[test]
+    fn cache_counterfactual_returns_only_defensible_partial_subtotals() {
+        let tokens = TokenCounts {
+            cached_input_tokens: 1_000_000,
+            cache_write_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            calculate_cache_impact(&tokens, &rule()),
+            PricingResult::Partial(750_000)
+        );
+        let mut unavailable = rule();
+        unavailable.cached_input_usd_micros_per_million = None;
+        assert_eq!(
+            calculate_cache_impact(
+                &TokenCounts {
+                    cached_input_tokens: 1,
+                    ..Default::default()
+                },
+                &unavailable,
+            ),
+            PricingResult::Unavailable
         );
     }
 

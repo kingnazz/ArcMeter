@@ -19,6 +19,21 @@ pub async fn dashboard_snapshot(
 }
 
 #[tauri::command]
+pub async fn cache_efficiency(
+    range: String,
+    provider: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<crate::cache_efficiency::CacheEfficiencyReport, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cache_efficiency::report(&database, &range, provider.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn scan_now(state: State<'_, AppState>) -> Result<ScanReport, String> {
     let _guard = state.scan_lock.lock().await;
     let database = state.database.clone();
