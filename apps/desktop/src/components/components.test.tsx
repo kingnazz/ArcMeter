@@ -289,6 +289,73 @@ describe("important product states", () => {
     render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={cacheReport({ measuredEventCount: 4, cachedInputTokens: 0, cacheWriteTokens: 0 })} />);
     expect(screen.getByText("Cache telemetry is unavailable for the providers in this range.")).toBeInTheDocument();
   });
+
+  it("keeps every range provider available while switching directly between filtered analytics", async () => {
+    const initial = { ...cacheReport(), availableProviders: ["grok", "codex", "claude", "codex"] };
+    const loadCache = vi.fn((range: CacheEfficiencyReport["range"], provider?: string) => Promise.resolve({
+      ...cacheReport({ cachedInputTokens: provider === "claude" ? 222 : 333 }),
+      range,
+      providerFilter: provider ?? null,
+      availableProviders: ["grok", "codex", "claude"],
+    }));
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={initial} loadCache={loadCache} />);
+
+    const providerSelect = screen.getByLabelText("Cache provider");
+    expect(within(providerSelect).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All providers",
+      "Claude Code CLI",
+      "Codex",
+      "Grok Build",
+    ]);
+
+    fireEvent.change(providerSelect, { target: { value: "claude" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(1, "7d", "claude"));
+    expect(providerSelect).toHaveValue("claude");
+    expect(within(providerSelect).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All providers",
+      "Claude Code CLI",
+      "Codex",
+      "Grok Build",
+    ]);
+    expect(screen.getAllByText("222").length).toBeGreaterThan(0);
+
+    fireEvent.change(providerSelect, { target: { value: "grok" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(2, "7d", "grok"));
+    expect(providerSelect).toHaveValue("grok");
+    expect(loadCache).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves a selected provider when a new range has no matching rows", async () => {
+    const initial = { ...cacheReport(), providerFilter: "claude", availableProviders: ["claude", "codex", "grok"] };
+    const loadCache = vi.fn((range: CacheEfficiencyReport["range"], provider?: string) => Promise.resolve({
+      ...cacheReport({ measuredEventCount: 0, cachedInputTokens: 0, cacheWriteTokens: 0 }),
+      range,
+      providerFilter: provider ?? null,
+      availableProviders: ["grok", "codex"],
+      byProvider: [],
+      byModel: [],
+      byProject: [],
+    }));
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={initial} loadCache={loadCache} />);
+
+    fireEvent.change(screen.getByLabelText("Cache date range"), { target: { value: "30d" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(1, "30d", "claude"));
+    const providerSelect = screen.getByLabelText("Cache provider");
+    expect(providerSelect).toHaveValue("claude");
+    expect(within(providerSelect).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "All providers",
+      "Claude Code CLI",
+      "Codex",
+      "Grok Build",
+    ]);
+    expect(screen.getByText("No measured cache activity yet.")).toBeInTheDocument();
+
+    fireEvent.change(providerSelect, { target: { value: "codex" } });
+    await waitFor(() => expect(loadCache).toHaveBeenNthCalledWith(2, "30d", "codex"));
+    expect(providerSelect).toHaveValue("codex");
+    expect(loadCache).toHaveBeenCalledTimes(2);
+  });
+
   it("shows gathering, active, reset-first, flat, stale, and reached quota pace states", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));

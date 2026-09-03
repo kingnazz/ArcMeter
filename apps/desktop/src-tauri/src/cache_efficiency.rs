@@ -8,7 +8,7 @@ use crate::pricing::{
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -203,12 +203,16 @@ pub fn report(
     let connection = Connection::open(database.path())?;
     let rules = load_pricing_rules(&connection)?;
     let provider = provider.map(str::trim).filter(|value| !value.is_empty());
-    let events = period_events(
-        &connection,
-        &range_start(range, Utc::now()).to_rfc3339(),
+    let start = range_start(range, Utc::now()).to_rfc3339();
+    let available_providers = period_providers(&connection, &start)?;
+    let events = period_events(&connection, &start, provider)?;
+    Ok(build_report(
+        range,
         provider,
-    )?;
-    Ok(build_report(range, provider, &events, &rules))
+        available_providers,
+        &events,
+        &rules,
+    ))
 }
 
 pub fn session_summary(
@@ -252,6 +256,19 @@ fn period_events(
         .map_err(Into::into)
 }
 
+fn period_providers(connection: &Connection, start: &str) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT provider
+         FROM usage_events
+         WHERE measurement_kind = 'measured' AND superseded_by_event_id IS NULL
+           AND occurred_at >= ?1
+         ORDER BY provider",
+    )?;
+    let rows = statement.query_map([start], |row| row.get(0))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
 fn map_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CacheEvent> {
     Ok(CacheEvent {
         provider: row.get(0)?,
@@ -275,15 +292,14 @@ fn map_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CacheEvent> {
 fn build_report(
     range: &str,
     provider_filter: Option<&str>,
+    available_providers: Vec<String>,
     events: &[CacheEvent],
     rules: &[PricingRule],
 ) -> CacheEfficiencyReport {
-    let mut providers = BTreeSet::new();
     let mut provider_groups: HashMap<String, (String, String, Accumulator)> = HashMap::new();
     let mut model_groups: HashMap<String, (String, String, Accumulator)> = HashMap::new();
     let mut project_groups: HashMap<String, Accumulator> = HashMap::new();
     for event in events {
-        providers.insert(event.provider.clone());
         provider_groups
             .entry(format!("{}:{}", event.provider, event.source))
             .or_insert_with(|| {
@@ -360,7 +376,7 @@ fn build_report(
     CacheEfficiencyReport {
         range: range.to_owned(),
         provider_filter: provider_filter.map(str::to_owned),
-        available_providers: providers.into_iter().collect(),
+        available_providers,
         summary: aggregate(events, rules),
         by_provider,
         by_model,
@@ -713,6 +729,99 @@ mod tests {
         assert_eq!(cache.by_provider.len(), 1);
         assert_eq!(cache.by_model.len(), 1);
         assert_eq!(cache.by_project[0].label, "ArcMeter");
+    }
+
+    #[test]
+    fn provider_discovery_is_range_scoped_canonical_and_filter_independent() {
+        let (_directory, database, device) = database();
+        let mut claude = event(
+            "claude",
+            "claude_code",
+            "claude-old",
+            None,
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 20,
+                ..Default::default()
+            },
+            &device,
+        );
+        claude.occurred_at = Utc::now() - Duration::days(8);
+        let codex = event(
+            "codex",
+            "codex_cli",
+            "codex-recent",
+            None,
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 10,
+                ..Default::default()
+            },
+            &device,
+        );
+        let grok = event(
+            "grok",
+            "grok_build",
+            "grok-recent",
+            None,
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 30,
+                ..Default::default()
+            },
+            &device,
+        );
+        let mut superseded = event(
+            "gemini",
+            "gemini_cli",
+            "superseded",
+            None,
+            TokenCounts {
+                input_tokens: 999,
+                cached_input_tokens: 999,
+                ..Default::default()
+            },
+            &device,
+        );
+        superseded.id = "e".repeat(64);
+        let activity = UsageEvent::activity(
+            "browser_only",
+            "browser",
+            SourceType::Browser,
+            Utc::now().timestamp().div_euclid(60),
+            &device,
+        )
+        .unwrap();
+        database
+            .insert_usage_events(&[claude, codex, grok, superseded.clone(), activity])
+            .unwrap();
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                "UPDATE usage_events SET superseded_by_event_id = 'replacement' WHERE id = ?1",
+                [&superseded.id],
+            )
+            .unwrap();
+
+        let all_30d = report(&database, "30d", None).unwrap();
+        let claude_30d = report(&database, "30d", Some("claude")).unwrap();
+        assert_eq!(
+            claude_30d.available_providers,
+            vec!["claude", "codex", "grok"]
+        );
+        assert_eq!(claude_30d.summary.measured_event_count, 1);
+        assert_eq!(claude_30d.summary.cached_input_tokens, 20);
+        assert_eq!(claude_30d.by_provider.len(), 1);
+        assert_eq!(
+            claude_30d.by_provider[0].provider.as_deref(),
+            Some("claude")
+        );
+        assert_eq!(all_30d.summary.cached_input_tokens, 60);
+
+        let empty_claude_7d = report(&database, "7d", Some("claude")).unwrap();
+        assert_eq!(empty_claude_7d.available_providers, vec!["codex", "grok"]);
+        assert_eq!(empty_claude_7d.summary.measured_event_count, 0);
+        assert_eq!(empty_claude_7d.summary.cached_input_tokens, 0);
     }
 
     #[test]

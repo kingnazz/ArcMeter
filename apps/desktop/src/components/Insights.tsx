@@ -58,9 +58,10 @@ function CacheEfficiencySection({ cache, loading, error, range, provider, onRang
 }) {
   const summary = cache?.summary;
   const hasCacheCounters = Boolean(summary && (summary.cachedInputTokens > 0 || summary.cacheWriteTokens > 0));
+  const providerOptions = [...new Set([...(cache?.availableProviders ?? []), ...(provider === "all" ? [] : [provider])])].sort();
   return <section className="panel cache-efficiency" aria-labelledby="cache-efficiency-title">
     <div className="cache-heading"><div><p className="eyebrow">Cache efficiency</p><h2 id="cache-efficiency-title">Measured input reuse</h2><span>Canonical event-period analytics; this is not a provider cache hit rate.</span></div><div className="cache-filters">
-      <label><span className="sr-only">Cache provider</span><select aria-label="Cache provider" value={provider} onChange={(event) => onProvider(event.target.value)}><option value="all">All providers</option>{cache?.availableProviders.map((value) => <option value={value} key={value}>{providerLabel(value)}</option>)}</select></label>
+      <label><span className="sr-only">Cache provider</span><select aria-label="Cache provider" value={provider} onChange={(event) => onProvider(event.target.value)}><option value="all">All providers</option>{providerOptions.map((value) => <option value={value} key={value}>{providerLabel(value)}</option>)}</select></label>
       <label><span className="sr-only">Cache date range</span><select aria-label="Cache date range" value={range} onChange={(event) => onRange(event.target.value as CacheRange)}><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="all">All time</option></select></label>
     </div></div>
     {error ? <div className="cache-empty" role="alert">{error}</div> : loading && !summary ? <div className="cache-empty">Loading cache telemetry…</div> : summary?.measuredEventCount === 0 ? <div className="cache-empty">No measured cache activity yet.</div> : !hasCacheCounters ? <div className="cache-empty">Cache telemetry is unavailable for the providers in this range.</div> : summary ? <>
