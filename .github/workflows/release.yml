@@ -2,6 +2,11 @@ name: Release ArcMeter
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".release/v0.3.0"
 
 permissions:
   contents: write
@@ -77,7 +82,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: ArcMeter v__VERSION__
           releaseBody: Windows installer and ad-hoc signed personal-use macOS installers, plus the signed ArcMeter updater manifest. The macOS apps are not Apple Developer ID signed or notarized.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
           updaterJsonPreferNsis: true
