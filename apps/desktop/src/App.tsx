@@ -1,4 +1,4 @@
-import { Activity as ActivityIcon, BarChart3, Gauge, PanelsTopLeft, RefreshCw, Settings as SettingsIcon, WifiOff } from "lucide-react";
+import { Activity as ActivityIcon, BarChart3, Cpu, Gauge, PanelsTopLeft, RefreshCw, Settings as SettingsIcon, WifiOff } from "lucide-react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
@@ -8,8 +8,9 @@ import { Overview } from "./components/Overview";
 import { Sessions } from "./components/Sessions";
 import { RangeSelector } from "./components/RangeSelector";
 import { Settings } from "./components/Settings";
+import { LocalModels } from "./components/LocalModels";
 import { AppUpdaterProvider, UpdateBanner } from "./components/AppUpdater";
-import { getActivityPage, getClaudeQuotaStatus, getDashboard, getGrokQuotaStatus, refreshClaudeQuota, refreshGrokQuota, renameDevice, saveSubscription, scanNow, setClaudeQuotaEnabled, setGrokQuotaEnabled, syncCloudNow } from "./lib/api";
+import { getActivityPage, getClaudeQuotaStatus, getDashboard, getGrokQuotaStatus, getSetting, refreshClaudeQuota, refreshGrokQuota, renameDevice, saveSubscription, scanNow, setClaudeQuotaEnabled, setGrokQuotaEnabled, syncCloudNow } from "./lib/api";
 import { formatRelativeTime } from "./lib/format";
 import type { DashboardSnapshot, NavKey, ProviderQuotaState, RangeKey, Subscription } from "./types";
 
@@ -17,13 +18,14 @@ const navigation: { key: NavKey; label: string; icon: typeof Gauge }[] = [
   { key: "overview", label: "Overview", icon: Gauge },
   { key: "activity", label: "Activity", icon: ActivityIcon },
   { key: "sessions", label: "Sessions", icon: PanelsTopLeft },
+  { key: "local-models", label: "Local Models", icon: Cpu },
   { key: "insights", label: "Insights", icon: BarChart3 },
   { key: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function App() {
   const [nav, setNav] = useState<NavKey>("overview");
-  const [range, setRange] = useState<RangeKey>("month");
+  const [range, setRange] = useState<RangeKey>("today");
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [claudeQuota, setClaudeQuota] = useState<ProviderQuotaState | null>(null);
   const [grokQuota, setGrokQuota] = useState<ProviderQuotaState | null>(null);
@@ -32,6 +34,10 @@ export default function App() {
   const [loadingActivity, setLoadingActivity] = useState(false);
   const [activityHasMore, setActivityHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getSetting("theme").then((theme) => { document.documentElement.dataset.theme = theme ?? "system"; });
+  }, []);
 
   const load = useCallback(async (nextRange: RangeKey = range) => {
     try {
@@ -149,12 +155,11 @@ export default function App() {
         <button type="button" className="brand" onClick={() => setNav("overview")} aria-label="Open Overview">
           <span className="brand-mark"><i /><i /><i /></span>
           <span>ArcMeter</span>
-          <small>V1</small>
         </button>
         <nav aria-label="Main navigation">
           {navigation.map((item) => {
             const Icon = item.icon;
-            return <button key={item.key} type="button" className={nav === item.key ? "active" : ""} onClick={() => setNav(item.key)}><Icon />{item.label}</button>;
+            return <button key={item.key} type="button" aria-current={nav === item.key ? "page" : undefined} className={nav === item.key ? "active" : ""} onClick={() => setNav(item.key)}><Icon />{item.label}</button>;
           })}
         </nav>
         <button type="button" className="sync-control" onClick={() => void scan()} disabled={scanning} title="Collect local usage now">
@@ -167,10 +172,10 @@ export default function App() {
       <main>
         <div className="page-header">
           <div>
-            <p className="eyebrow">{nav === "overview" ? "Usage intelligence" : nav === "activity" ? "Measured event ledger" : nav === "sessions" ? "Grouped measured work" : nav === "insights" ? "Reliable comparisons" : "ArcMeter preferences"}</p>
+            <p className="eyebrow">{nav === "overview" ? "Usage intelligence" : nav === "activity" ? "Usage & runtime activity" : nav === "sessions" ? "Grouped measured work" : nav === "local-models" ? "On this computer" : nav === "insights" ? "Reliable comparisons" : "ArcMeter preferences"}</p>
             <h1>{title}</h1>
           </div>
-          {nav !== "settings" && nav !== "sessions" ? <RangeSelector value={range} onChange={(value) => void changeRange(value)} /> : data ? <span className="updated-label">Updated {formatRelativeTime(data.generatedAt)}</span> : null}
+          {nav !== "settings" && nav !== "sessions" && nav !== "local-models" ? <RangeSelector value={range} onChange={(value) => void changeRange(value)} /> : data ? <span className="updated-label">Updated {formatRelativeTime(data.generatedAt)}</span> : null}
         </div>
 
         {nav !== "settings" ? <UpdateBanner onOpenSettings={() => setNav("settings")} /> : null}
@@ -178,10 +183,11 @@ export default function App() {
 
         {loading && !data ? <LoadingState /> : data ? (
           <div className={loading ? "page-content refreshing" : "page-content"}>
-            {nav === "overview" ? <Overview data={data} quotas={[claudeQuota, grokQuota]} scanning={scanning} onScan={() => void scan()} /> : null}
+            {nav === "overview" ? <Overview data={data} quotas={[claudeQuota, grokQuota]} scanning={scanning} onScan={() => void scan()} onLocalModels={() => setNav("local-models")} onActivity={() => setNav("activity")} /> : null}
+            {nav === "local-models" ? <LocalModels data={data.localModels} scanning={scanning} onScan={() => void scan()} onSettings={() => setNav("settings")} /> : null}
             {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
             {nav === "sessions" ? <Sessions /> : null}
-            {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} quotas={[claudeQuota, grokQuota]} /> : null}
+            {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} quotas={[claudeQuota, grokQuota]} telemetry={data.telemetry} byProvider={data.byProvider} /> : null}
             {nav === "settings" ? <Settings data={data} claudeQuota={claudeQuota} grokQuota={grokQuota} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} onToggleClaudeQuota={async (enabled) => setClaudeQuota(await setClaudeQuotaEnabled(enabled))} onRefreshClaudeQuota={async () => setClaudeQuota(await refreshClaudeQuota())} onToggleGrokQuota={async (enabled) => setGrokQuota(await setGrokQuotaEnabled(enabled))} onRefreshGrokQuota={async () => setGrokQuota(await refreshGrokQuota())} /> : null}
           </div>
         ) : null}

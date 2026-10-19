@@ -1,0 +1,1 @@
+{"models":[{"key":"google/gemma","display_name":"Gemma","params_string":"27B","quantization":{"name":"Q4_K_M"},"size_bytes":18000000000,"loaded_instances":[{"id":"instance-1","config":{"context_length":8192}}],"max_context_length":131072},{"key":"qwen/qwen3","loaded_instances":[],"max_context_length":32768}]}

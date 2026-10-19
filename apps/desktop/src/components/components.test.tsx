@@ -16,6 +16,8 @@ afterEach(() => {
 
 function snapshot(): DashboardSnapshot {
   return {
+    localModels: {runtimes:[], measuredTokensToday:0, requestsToday:null, observationsToday:0, historyStatus:"not_found"},
+    telemetry: {runtimeTokens:0,toolTokens:0,unclassifiedTokens:0,runtimeObservations:0,runtimeTrend:[]},
     generatedAt: now,
     range: "month",
     metrics: {
@@ -91,6 +93,30 @@ function snapshot(): DashboardSnapshot {
     },
   };
 }
+
+describe("telemetry routing accuracy", () => {
+  it("retains both telemetry layers without presenting a unique workload share", () => {
+    const data = snapshot();
+    data.telemetry = {runtimeTokens:120,toolTokens:120,unclassifiedTokens:0,runtimeObservations:1,runtimeTrend:[]};
+    data.metrics.measuredTokensRange = 240;
+    data.metrics.measuredTokensMonth = 240;
+    data.metrics.measuredEventsRange = 2;
+    render(<Overview data={data} scanning={false} onScan={vi.fn()} />);
+    expect(screen.getByText("Telemetry tokens · selected period")).toBeInTheDocument();
+    expect(screen.getByText(/2 source records · may include overlapping inference/)).toBeInTheDocument();
+    expect(screen.getAllByText("120")).toHaveLength(2);
+    expect(screen.queryByText(/% local|cloud tools|workload split/i)).not.toBeInTheDocument();
+  });
+
+  it("explains unknown tool routing, unestablished hosted inference and no cross-source deduplication", () => {
+    render(<Insights insights={[]} byModel={[]} byProject={[]} initialCache={cacheReport()} telemetry={{runtimeTokens:120,toolTokens:120,unclassifiedTokens:50,runtimeObservations:1,runtimeTrend:[]}} />);
+    expect(screen.getByText("Telemetry layers")).toBeInTheDocument();
+    expect(screen.getByText("Unclassified telemetry")).toBeInTheDocument();
+    expect(screen.getByText(/Hosted inference is not established/)).toBeInTheDocument();
+    expect(screen.getByText(/without subtraction or cross-source deduplication/)).toBeInTheDocument();
+    expect(screen.queryByText(/cloud tool|local \/ cloud|% local/i)).not.toBeInTheDocument();
+  });
+});
 
 function quota(overrides: Partial<ProviderQuotaState> = {}): ProviderQuotaState {
   return {

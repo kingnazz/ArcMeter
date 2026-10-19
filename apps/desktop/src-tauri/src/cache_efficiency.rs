@@ -410,9 +410,10 @@ fn sort_breakdowns(items: &mut [CacheEfficiencyBreakdown]) {
 
 fn source_input_semantics(provider: &str, source: &str) -> Option<InputTokenSemantics> {
     match (provider, source) {
-        ("codex", "codex_cli") | ("grok", "grok_build") | ("gemini", "gemini_cli") => {
-            Some(InputTokenSemantics::CacheIncluded)
-        }
+        ("codex", "codex_cli")
+        | ("grok", "grok_build")
+        | ("gemini", "gemini_cli")
+        | ("omlx", "omlx_usage_hourly") => Some(InputTokenSemantics::CacheIncluded),
         ("claude", "claude_code") => Some(InputTokenSemantics::CacheAdditive),
         _ => None,
     }
@@ -442,6 +443,7 @@ fn source_label(provider: &str, source: &str) -> String {
         ("claude", "claude_code") => "Claude Code".into(),
         ("grok", "grok_build") => "Grok Build".into(),
         ("gemini", "gemini_cli") => "Gemini CLI".into(),
+        ("omlx", "omlx_usage_hourly") => "oMLX".into(),
         _ => source.replace('_', " "),
     }
 }

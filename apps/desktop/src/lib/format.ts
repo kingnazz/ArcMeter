@@ -33,6 +33,9 @@ export function formatMinutes(value: number): string {
 }
 
 export function activitySourceLabel(source: string, provider: string): string {
+  const runtimeStates: Record<string, string> = { local_server_online: "Server detected", local_server_unavailable: "Server unavailable", local_model_loaded: "Model loaded", local_model_unloaded: "Model unloaded" };
+  if (runtimeStates[source]) return `${providerLabel(provider)} · ${runtimeStates[source]}`;
+  if (source === "omlx_usage_hourly") return "oMLX · hourly usage";
   if (source === "claude_desktop") return "Claude Desktop";
   if (source === "grok_web") return "Grok web";
   return providerLabel(provider);
@@ -137,6 +140,9 @@ export function providerLabel(provider: string): string {
     claude: "Claude Code CLI",
     grok: "Grok Build",
     gemini: "Gemini CLI",
+    omlx: "oMLX",
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
     openai: "ChatGPT Personal",
     openai_business: "ChatGPT Business",
     anthropic: "Claude",
@@ -144,4 +150,16 @@ export function providerLabel(provider: string): string {
     google: "Google AI / Gemini",
   };
   return labels[provider] ?? provider;
+}
+
+export function isLocalProvider(provider: string): boolean { return ["omlx", "ollama", "lmstudio"].includes(provider); }
+// A tool/model name cannot prove inference location. Match known collectors only.
+export function telemetryLayer(item: { provider: string; source: string; measurementKind?: string }): "runtime" | "tool" | "unknown" {
+  if ((item.provider === "omlx" && item.source === "omlx_usage_hourly") ||
+      (isLocalProvider(item.provider) && item.source.startsWith("local_"))) return "runtime";
+  const toolSources: Record<string, string> = { codex: "codex_cli", claude: "claude_code", gemini: "gemini_cli", grok: "grok_build" };
+  if (item.measurementKind === "activity_only" &&
+      ((item.provider === "claude" && item.source === "claude_desktop") ||
+       (item.provider === "grok" && item.source === "grok_web"))) return "tool";
+  return toolSources[item.provider] === item.source ? "tool" : "unknown";
 }

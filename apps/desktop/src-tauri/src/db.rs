@@ -191,6 +191,17 @@ impl Database {
             )?;
             transaction.commit()?;
         }
+        if current < 7 {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(include_str!("../migrations/0007_local_models.sql"))?;
+            transaction.pragma_update(None, "user_version", 7)?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(7, ?1)",
+                [Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -1154,7 +1165,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(preserved, (1, 0, 0, 0, None, None, 6));
+        assert_eq!(preserved, (1, 0, 0, 0, None, None, 7));
         let claude_pricing: (String, Option<i64>, Option<i64>) = connection
             .query_row(
                 "SELECT input_token_semantics, cache_write_5m_usd_micros_per_million,
@@ -1214,7 +1225,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(preserved, ("rolling".into(), 4200, 6));
+        assert_eq!(preserved, ("rolling".into(), 4200, 7));
         connection
             .execute(
                 "INSERT INTO provider_quota_snapshots(
@@ -1866,6 +1877,6 @@ mod tests {
         assert_eq!(summary.3, 1);
         assert!(summary.4 >= 4);
         assert!(summary.5 >= 20);
-        assert_eq!(summary.6, 4);
+        assert_eq!(summary.6, 7);
     }
 }

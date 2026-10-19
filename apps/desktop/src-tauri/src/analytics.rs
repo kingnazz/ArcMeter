@@ -21,6 +21,61 @@ pub struct DashboardSnapshot {
     pub sources: Vec<SourceScanResult>,
     pub subscriptions: Vec<Subscription>,
     pub device: Device,
+    pub local_models: crate::local_models::LocalModelsSnapshot,
+    pub telemetry: TelemetrySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetrySummary {
+    pub runtime_tokens: i64,
+    pub tool_tokens: i64,
+    pub unclassified_tokens: i64,
+    pub runtime_observations: i64,
+    pub runtime_trend: Vec<TrendPoint>,
+}
+
+fn telemetry(connection: &Connection, start: DateTime<Utc>) -> Result<TelemetrySummary> {
+    // Classify the documented collector, not a provider/model name or presumed route.
+    // No current tool collector establishes whether inference was hosted or local.
+    let (runtime_tokens, tool_tokens, unclassified_tokens) = connection.query_row("WITH layers AS (
+        SELECT total_tokens, CASE
+          WHEN provider='omlx' AND source='omlx_usage_hourly' THEN 'runtime'
+          WHEN (provider='codex' AND source='codex_cli')
+            OR (provider='claude' AND source='claude_code')
+            OR (provider='gemini' AND source='gemini_cli')
+            OR (provider='grok' AND source='grok_build') THEN 'tool'
+          ELSE 'unknown' END AS layer
+        FROM usage_events WHERE measurement_kind='measured' AND superseded_by_event_id IS NULL AND occurred_at>=?1)
+        SELECT COALESCE(SUM(CASE WHEN layer='runtime' THEN total_tokens ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN layer='tool' THEN total_tokens ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN layer='unknown' THEN total_tokens ELSE 0 END),0) FROM layers",
+        [start.to_rfc3339()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let runtime_observations = connection.query_row(
+        "SELECT COUNT(*) FROM local_runtime_observations WHERE observed_at>=?1",
+        [start.to_rfc3339()],
+        |r| r.get(0),
+    )?;
+    let mut statement = connection.prepare("SELECT substr(occurred_at,1,10) day, SUM(total_tokens) FROM usage_events
+        WHERE measurement_kind='measured' AND superseded_by_event_id IS NULL AND provider='omlx' AND source='omlx_usage_hourly'
+        AND occurred_at>=?1 GROUP BY day ORDER BY day")?;
+    let runtime_trend = statement
+        .query_map([start.to_rfc3339()], |r| {
+            let date: String = r.get(0)?;
+            Ok(TrendPoint {
+                label: date.get(5..).unwrap_or(&date).replace('-', "/"),
+                date,
+                tokens: r.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(TelemetrySummary {
+        runtime_tokens,
+        tool_tokens,
+        unclassified_tokens,
+        runtime_observations,
+        runtime_trend,
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -160,6 +215,8 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         sources: normalized_sources(scan),
         subscriptions,
         device: database.device()?,
+        local_models: crate::local_models::snapshot(database)?,
+        telemetry: telemetry(&connection, start)?,
     })
 }
 
@@ -317,7 +374,11 @@ fn activity(
                 u.measurement_kind, u.device_id, d.friendly_name
          FROM usage_events u JOIN devices d ON d.id = u.device_id
          WHERE u.occurred_at >= ?1 AND u.superseded_by_event_id IS NULL
-         ORDER BY u.occurred_at DESC, u.id DESC LIMIT ?2 OFFSET ?3",
+         UNION ALL
+         SELECT o.id, o.provider, 'local_' || o.state, o.observed_at, o.model, NULL, 0,
+                0, 0, 0, 0, 0, 0, 0, NULL, NULL, 'runtime_status', o.device_id, d.friendly_name
+         FROM local_runtime_observations o JOIN devices d ON d.id=o.device_id WHERE o.observed_at>=?1
+         ORDER BY 4 DESC, 1 DESC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = statement.query_map(params![start.to_rfc3339(), limit, offset], |row| {
         let date: String = row.get(3)?;
@@ -372,9 +433,9 @@ fn insights(
     {
         output.push(Insight {
             id: "provider-share".into(),
-            title: format!("{} leads measured usage", top.label),
+            title: format!("{} leads recorded telemetry", top.label),
             detail: format!(
-                "{} represented {:.0}% of measured tokens in this period.",
+                "{} represented {:.0}% of recorded tokens in this period. Sources may overlap; this is not a share of unique inference.",
                 top.label, top.percentage
             ),
             tone: "provider".into(),
@@ -393,7 +454,7 @@ fn insights(
             id: "top-project".into(),
             title: format!("{} is the highest-usage project", top.label),
             detail: format!(
-                "It accounted for {:.0}% of measured usage in this period.",
+                "It accounted for {:.0}% of recorded tokens in this period; sources may overlap.",
                 top.percentage
             ),
             tone: "project".into(),
@@ -419,7 +480,7 @@ fn insights(
                     "Usage eased".into()
                 },
                 detail: format!(
-                    "Measured tokens changed by {:+.0}% versus the previous comparable period.",
+                    "Recorded telemetry tokens changed by {:+.0}% versus the previous comparable period. Source coverage and overlap can affect this comparison.",
                     change
                 ),
                 tone: "trend".into(),
@@ -466,6 +527,9 @@ fn provider_label(provider: &str) -> String {
         "claude" => "Claude Code CLI".into(),
         "grok" => "Grok Build".into(),
         "gemini" => "Gemini CLI".into(),
+        "omlx" => "oMLX".into(),
+        "ollama" => "Ollama".into(),
+        "lmstudio" => "LM Studio".into(),
         value => value.into(),
     }
 }
@@ -474,6 +538,61 @@ fn provider_label(provider: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::{SourceType, TokenCounts, UsageEvent};
+
+    #[test]
+    fn telemetry_layers_preserve_overlap_and_never_infer_tool_routing() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("layers.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let time = Utc::now();
+        for (provider, source) in [
+            ("codex", "codex_cli"),
+            ("claude", "claude_code"),
+            ("gemini", "gemini_cli"),
+            ("grok", "grok_build"),
+            ("omlx", "omlx_usage_hourly"),
+            ("omlx", "undocumented"),
+            ("unknown", "unknown"),
+        ] {
+            let event = UsageEvent::measured(
+                provider,
+                source,
+                "same-hour",
+                provider.to_owned() + source,
+                time,
+                Some("Qwen".into()),
+                None,
+                TokenCounts {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    total_tokens: 120,
+                    ..Default::default()
+                },
+                &device.id,
+            );
+            database.insert_usage_events(&[event]).unwrap();
+        }
+        let snapshot = dashboard(&database, "all", &Default::default()).unwrap();
+        assert_eq!(snapshot.telemetry.tool_tokens, 480);
+        assert_eq!(snapshot.telemetry.runtime_tokens, 120);
+        assert_eq!(snapshot.telemetry.unclassified_tokens, 240);
+        assert_eq!(snapshot.local_models.measured_tokens_today, 120);
+        assert_eq!(snapshot.metrics.measured_events_range, 7); // all source records retained
+        assert_eq!(snapshot.metrics.measured_tokens_range, 840); // telemetry, never unique inference
+        assert_eq!(
+            snapshot
+                .telemetry
+                .runtime_trend
+                .iter()
+                .map(|p| p.tokens)
+                .sum::<i64>(),
+            120
+        );
+        let serialized = serde_json::to_string(&snapshot.telemetry).unwrap();
+        assert!(!serialized.contains("cloud"));
+        assert!(!serialized.contains("hosted"));
+        assert!(!serialized.contains("percentage"));
+    }
 
     #[test]
     fn dashboard_aggregates_measured_value_subscription_and_device() {

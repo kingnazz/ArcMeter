@@ -16,7 +16,7 @@ const SESSION_FILTER_CTES: &str = "WITH eligible_events AS (
            u.reasoning_tokens, u.total_tokens, u.estimated_api_value_usd_micros,
            u.native_cost_usd_ticks, u.pricing_status, u.device_id, d.friendly_name
     FROM usage_events u JOIN devices d ON d.id = u.device_id
-    WHERE u.measurement_kind = 'measured' AND u.superseded_by_event_id IS NULL
+    WHERE u.measurement_kind = 'measured' AND u.superseded_by_event_id IS NULL AND u.source != 'omlx_usage_hourly'
 ), session_bounds AS (
     SELECT provider, source, native_session_id, MAX(occurred_at) AS last_activity_at
     FROM eligible_events GROUP BY provider, source, native_session_id

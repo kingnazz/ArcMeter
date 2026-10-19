@@ -1,0 +1,1 @@
+{"models":[{"model":"qwen3:8b","name":"qwen3:8b","size":5200000000,"details":{"parameter_size":"8B","quantization_level":"Q4_K_M"}},{"model":"gemma:4b","size":3300000000,"details":{"parameter_size":"4B","quantization_level":"Q4_0"}}]}

@@ -1,6 +1,7 @@
 import { BarChart3, FolderKanban, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { BreakdownItem, CacheEfficiencyBreakdown, CacheEfficiencyReport, CacheRange, Insight, ProviderQuotaState } from "../types";
+import type { BreakdownItem, CacheEfficiencyBreakdown, CacheEfficiencyReport, CacheRange, Insight, ProviderQuotaState, TelemetrySummary } from "../types";
+import { UsageChart } from "./Overview";
 import { getCacheEfficiency } from "../lib/api";
 import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdMicrosPrecise, providerLabel } from "../lib/format";
 
@@ -11,9 +12,11 @@ interface InsightsProps {
   quotas?: (ProviderQuotaState | null)[];
   initialCache?: CacheEfficiencyReport;
   loadCache?: (range: CacheRange, provider?: string) => Promise<CacheEfficiencyReport>;
+  telemetry?: TelemetrySummary;
+  byProvider?: BreakdownItem[];
 }
 
-export function Insights({ insights, byModel, byProject, quotas = [], initialCache, loadCache = getCacheEfficiency }: InsightsProps) {
+export function Insights({ insights, byModel, byProject, quotas = [], initialCache, loadCache = getCacheEfficiency, telemetry, byProvider = [] }: InsightsProps) {
   const quotaAnalyses = quotas.flatMap((quota) => quota?.enabled ? quota.analyses : []);
   const [cacheRange, setCacheRange] = useState<CacheRange>(initialCache?.range ?? "7d");
   const [cacheProvider, setCacheProvider] = useState(initialCache?.providerFilter ?? "all");
@@ -38,7 +41,8 @@ export function Insights({ insights, byModel, byProject, quotas = [], initialCac
   }, [cacheProvider, cacheRange, loadCache]);
 
   return <div className="page-stack insights-page">
-    <section className="insight-lead"><p className="eyebrow">Deterministic analytics</p><h1>What changed, without the guesswork.</h1><p>Every observation below is computed from measured metadata. No LLM-generated narrative is involved.</p></section>
+    <section className="insight-lead"><p>Trends and comparisons from telemetry metadata. Source totals may overlap and do not measure unique inference.</p></section>
+    {telemetry ? <section className="panel local-insights"><div className="panel-heading"><div><h2>Telemetry layers</h2><p>Selected period · local runtime token trend</p></div><span className="local-badge">Source metadata</span></div><div className="local-insight-grid"><div><UsageChart points={telemetry.runtimeTrend} /></div><div className="telemetry-ledger"><dl><div><dt>Local runtime telemetry</dt><dd>{formatTokens(telemetry.runtimeTokens)}</dd></div><div><dt>Tool telemetry</dt><dd>{formatTokens(telemetry.toolTokens)}</dd></div>{telemetry.unclassifiedTokens > 0 ? <div><dt>Unclassified telemetry</dt><dd>{formatTokens(telemetry.unclassifiedTokens)}</dd></div> : null}<div><dt>Runtime observations</dt><dd>{telemetry.runtimeObservations.toLocaleString()}</dd></div></dl><p>Tool activity does not establish inference location. Codex, Claude, Gemini and Grok routing is unknown. Hosted inference is not established by these collectors; oMLX history measures local runtime inference.</p><p>Tools can route to local runtimes, so the same inference may appear in both layers. Counts are retained separately without subtraction or cross-source deduplication.</p>{byProvider.length ? <Ranking title="Telemetry by source · may overlap" items={byProvider} /> : <p>No measured telemetry in this period.</p>}</div></div></section> : null}
     <CacheEfficiencySection cache={cache} loading={cacheLoading} error={cacheError} range={cacheRange} provider={cacheProvider} onRange={setCacheRange} onProvider={setCacheProvider} />
     {quotaAnalyses.length > 0 ? <section className="panel quota-insights" aria-labelledby="quota-pace-title">
       <div className="panel-heading"><div><h2 id="quota-pace-title">Quota pace</h2><p>Provider-reported percentages · current period · same source device</p></div></div>
@@ -65,7 +69,7 @@ function CacheEfficiencySection({ cache, loading, error, range, provider, onRang
       <label><span className="sr-only">Cache date range</span><select aria-label="Cache date range" value={range} onChange={(event) => onRange(event.target.value as CacheRange)}><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="all">All time</option></select></label>
     </div></div>
     {error ? <div className="cache-empty" role="alert">{error}</div> : loading && !summary ? <div className="cache-empty">Loading cache telemetry…</div> : summary?.measuredEventCount === 0 ? <div className="cache-empty">No measured cache activity yet.</div> : !hasCacheCounters ? <div className="cache-empty">Cache telemetry is unavailable for the providers in this range.</div> : summary ? <>
-      <div className="cache-metrics"><div className="cache-reuse"><span>Input reuse</span><strong>{formatReuse(summary.reuseShareBps)}</strong><small>{semanticQualifier(summary.semanticCoverage)}</small></div><CacheMetric label="Cache read" value={summary.cachedInputTokens} /><CacheMetric label="Fresh input" value={summary.freshInputTokens} /><CacheMetric label="Cache write" value={summary.cacheWriteTokens} /><div className={`cache-impact ${summary.apiEquivalentCacheImpactUsdMicros !== null && summary.apiEquivalentCacheImpactUsdMicros < 0 ? "negative" : ""}`}><span>API-equivalent cache impact</span><strong>{impactLabel(summary.apiEquivalentCacheImpactUsdMicros)}</strong><small>{pricingQualifier(summary.cachePricingCoverage, summary.apiEquivalentCacheImpactUsdMicros)}</small></div></div>
+      <div className="cache-metrics"><div className="cache-reuse"><span>Input reuse</span><strong>{formatReuse(summary.reuseShareBps)}</strong><small>{semanticQualifier(summary.semanticCoverage)}</small></div><CacheMetric label="Cache read" value={summary.cachedInputTokens} /><CacheMetric label="Fresh input" value={summary.freshInputTokens} /><CacheMetric label="Cache write" value={provider === "omlx" ? null : summary.cacheWriteTokens} /><div className={`cache-impact ${summary.apiEquivalentCacheImpactUsdMicros !== null && summary.apiEquivalentCacheImpactUsdMicros < 0 ? "negative" : ""}`}><span>API-equivalent cache impact</span><strong>{impactLabel(summary.apiEquivalentCacheImpactUsdMicros)}</strong><small>{pricingQualifier(summary.cachePricingCoverage, summary.apiEquivalentCacheImpactUsdMicros)}</small></div></div>
       {summary.cacheWrite5mTokens > 0 || summary.cacheWrite1hTokens > 0 || (provider !== "grok" && summary.cacheWriteUnspecifiedTokens > 0) ? <div className="cache-write-detail" aria-label="Cache write duration detail"><span>Cache created</span>{summary.cacheWrite5mTokens > 0 ? <small>5-minute <strong>{formatTokens(summary.cacheWrite5mTokens)}</strong></small> : null}{summary.cacheWrite1hTokens > 0 ? <small>1-hour <strong>{formatTokens(summary.cacheWrite1hTokens)}</strong></small> : null}{provider !== "grok" && summary.cacheWriteUnspecifiedTokens > 0 ? <small>Unspecified <strong>{formatTokens(summary.cacheWriteUnspecifiedTokens)}</strong></small> : null}</div> : null}
       <div className="cache-breakdowns"><CacheRanking title="By provider" items={cache.byProvider} /><CacheRanking title="By model" items={cache.byModel} /><CacheRanking title="By project" items={cache.byProject} /></div>
     </> : <div className="cache-empty">Loading cache telemetry…</div>}

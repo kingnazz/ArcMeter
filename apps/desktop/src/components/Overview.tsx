@@ -1,20 +1,23 @@
 import { useState } from "react";
 import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
 import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult, TrendPoint } from "../types";
-import { formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
+import { activitySourceLabel, formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
+import { LocalOverview } from "./LocalModels";
 
 interface OverviewProps {
   data: DashboardSnapshot;
   quotas?: (ProviderQuotaState | null)[];
   scanning: boolean;
   onScan: () => void;
+  onLocalModels?: () => void;
+  onActivity?: () => void;
 }
-export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps) {
+export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, onActivity }: OverviewProps) {
   const enabledQuotas = quotas.filter((quota): quota is ProviderQuotaState => Boolean(quota?.enabled));
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <div className="page-stack overview-page">{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
+    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} /><RecentActivity items={data.activity} onOpen={onActivity} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -36,16 +39,17 @@ export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps)
       : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
+      <LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} />
       {enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}
       <section className="hero-metrics" aria-label="Headline usage metrics">
         <div className="hero-primary">
-          <p className="eyebrow">Measured tokens · selected period</p>
+          <p className="eyebrow">Telemetry tokens · selected period</p>
           <div className="metric-number">{formatTokens(metrics.measuredTokensRange)}</div>
-          <p className="metric-footnote">{metrics.measuredEventsRange.toLocaleString()} authoritative local usage events</p>
+          <p className="metric-footnote">{metrics.measuredEventsRange.toLocaleString()} source records · may include overlapping inference</p>
         </div>
         <div className="metric-divider" />
-        <Metric label="Today" value={formatTokens(metrics.measuredTokensToday)} suffix="measured" />
-        <Metric label="This month" value={formatTokens(metrics.measuredTokensMonth)} suffix="measured" />
+        <Metric label="Today" value={formatTokens(metrics.measuredTokensToday)} suffix="telemetry tokens" />
+        <Metric label="This month" value={formatTokens(metrics.measuredTokensMonth)} suffix="telemetry tokens" />
         <Metric label="Active time" value={formatMinutes(metrics.activityMinutesRange)} suffix="activity-only" />
         <Metric label="Subscriptions" value={formatUsdCents(metrics.monthlySubscriptionUsdCents)} suffix="monthly" />
       </section>
@@ -96,20 +100,21 @@ export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps)
         <p className="calculator-note">Public API list price is the closest verifiable MSRP. Providers do not publish a definitive “unsubsidized” consumer price, so values above 1× are scenarios—not claims about provider costs.</p>
       </section>
 
+      <RecentActivity items={data.activity} onOpen={onActivity} />
       <div className="overview-grid">
         <section className="panel trend-panel">
-          <PanelHeader title="Usage trend" subtitle="Measured tokens only" />
+          <PanelHeader title="Telemetry trend" subtitle="Source token counts · may overlap" />
           <UsageChart points={data.trend} />
         </section>
         <section className="panel provider-panel">
-          <PanelHeader title="By provider" subtitle="Share of selected period" />
+          <PanelHeader title="By telemetry source" subtitle="Share of recorded tokens · may overlap" />
           <BreakdownList items={data.byProvider} providerMarks />
         </section>
       </div>
 
       <div className="overview-grid overview-grid-bottom">
         <section className="panel">
-          <PanelHeader title="Top models" subtitle="Measured usage" />
+          <PanelHeader title="Top models" subtitle="Recorded tokens · may overlap" />
           <BreakdownList items={data.byModel.slice(0, 5)} />
         </section>
         <section className="panel">
@@ -123,6 +128,11 @@ export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps)
       </div>
     </div>
   );
+}
+
+function RecentActivity({ items, onOpen }: { items: DashboardSnapshot["activity"]; onOpen?: () => void }) {
+  if (items.length === 0) return null;
+  return <section className="panel recent-activity" aria-label="Recent activity"><div className="panel-heading"><div><h2>Recent activity</h2><p>Selected period · usage and runtime observations</p></div>{onOpen ? <button className="text-button" type="button" onClick={onOpen}>View activity <ArrowUpRight /></button> : null}</div><div>{items.slice(0,3).map((item) => <div className="recent-activity-row" key={item.id}><ProviderMark provider={item.provider} size="small" /><div><strong>{activitySourceLabel(item.source,item.provider)}</strong><span>{item.model ?? (item.measurementKind === "runtime_status" ? "Runtime status change" : item.projectName ?? "Model unavailable")}</span></div><time dateTime={item.occurredAt}>{formatRelativeTime(item.occurredAt)}</time><b>{item.measurementKind === "runtime_status" ? "State change" : item.measurementKind === "activity_only" ? "1 active min" : `${formatTokens(item.totalTokens)} measured`}</b></div>)}</div></section>;
 }
 
 function LiveLimits({ quota }: { quota: ProviderQuotaState }) {
@@ -230,7 +240,7 @@ function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
   );
 }
 
-function UsageChart({ points }: { points: TrendPoint[] }) {
+export function UsageChart({ points }: { points: TrendPoint[] }) {
   if (points.length === 0) {
     return <div className="chart-empty">Usage will appear here after the next measured event.</div>;
   }

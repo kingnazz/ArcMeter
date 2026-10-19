@@ -36,6 +36,7 @@ pub async fn cache_efficiency(
 #[tauri::command]
 pub async fn scan_now(state: State<'_, AppState>) -> Result<ScanReport, String> {
     let _guard = state.scan_lock.lock().await;
+    let _ = crate::local_models::refresh(&state.database, &state.device_id).await;
     let database = state.database.clone();
     let device_id = state.device_id.clone();
     let report =
@@ -44,6 +45,35 @@ pub async fn scan_now(state: State<'_, AppState>) -> Result<ScanReport, String> 
             .map_err(|error| error.to_string())?;
     *state.last_scan.lock().await = report.clone();
     Ok(report)
+}
+
+#[tauri::command]
+pub async fn configure_local_runtime(
+    provider: String,
+    enabled: bool,
+    endpoint: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _guard = state.scan_lock.lock().await;
+    crate::local_models::configure(&state.database, &provider, enabled, endpoint.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn test_local_runtime(
+    provider: String,
+    endpoint: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // Tests the draft value without persisting it or changing analytics.
+    let _guard = state.scan_lock.lock().await;
+    if !crate::local_models::providers::PROVIDERS.contains(&provider.as_str()) {
+        return Err("Unsupported runtime".into());
+    }
+    crate::local_models::providers::detect(&provider, &endpoint)
+        .await
+        .map(|models| format!("Connected · {} models available", models.len()))
+        .map_err(str::to_owned)
 }
 
 #[tauri::command]
