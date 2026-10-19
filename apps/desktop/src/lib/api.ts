@@ -7,7 +7,7 @@ const unavailableDevice: Device = {
   friendlyName: "Local preview",
   os: "unknown",
   architecture: "unknown",
-  appVersion: "0.2.2",
+  appVersion: "0.4.0",
   createdAt: previewNow,
   lastSeenAt: previewNow,
   lastSyncAt: null,

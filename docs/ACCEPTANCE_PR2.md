@@ -114,6 +114,8 @@ issue found during QA was corrected using the existing theme surface token.
 - [Revised Insights, empty state, light](screenshots/telemetry-insights-empty-light.png)
 
 No real local-model screenshot is available because the live host is inaccessible.
-Keep PR #2 in draft and do not merge or release until live Qwen/oMLX and simultaneous
-Codex acceptance are completed. The implementation and automated checks can be
-reviewed independently of that remaining acceptance evidence.
+The pre-release recommendation was to keep PR #2 in draft until live Qwen/oMLX
+and simultaneous Codex acceptance. The user subsequently authorized merging and
+publishing v0.4.0 with this live acceptance still outstanding. The
+[release notes](releases/v0.4.0.md) retain that limitation; publication does not
+certify the unobserved Mac installation.
