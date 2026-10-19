@@ -1,5 +1,42 @@
 export type RangeKey = "today" | "7d" | "30d" | "month" | "all";
-export type NavKey = "overview" | "activity" | "sessions" | "insights" | "settings";
+export type NavKey = "overview" | "activity" | "sessions" | "local-models" | "insights" | "settings";
+
+export interface LocalModel {
+  id: string;
+  name: string;
+  loaded: boolean | null;
+  contextLength: number | null;
+  quantization: string | null;
+  parameters: string | null;
+  sizeBytes: number | null;
+  firstSeen: string;
+  lastSeen: string;
+  lastActivityAt: string | null;
+}
+export interface LocalRuntime {
+  provider: string;
+  enabled: boolean;
+  endpoint: string;
+  automatic: boolean;
+  status: string;
+  checkedAt: string | null;
+  detectedAt: string | null;
+  diagnostic: string;
+  models: LocalModel[];
+}
+export interface LocalModelsSnapshot {
+  runtimes: LocalRuntime[];
+  measuredTokensToday: number;
+  requestsToday: number | null;
+  observationsToday: number;
+  historyStatus: string;
+}
+export interface WorkloadSummary {
+  localTokens: number;
+  cloudTokens: number;
+  localObservations: number;
+  localTrend: TrendPoint[];
+}
 
 export interface HeadlineMetrics {
   measuredTokensToday: number;
@@ -44,7 +81,7 @@ export interface ActivityItem {
   reasoningTokens: number;
   nativeCostUsdTicks: number | null;
   estimatedApiValueUsdMicros: number | null;
-  measurementKind: "measured" | "estimated" | "activity_only";
+  measurementKind: "measured" | "estimated" | "activity_only" | "runtime_status";
   deviceId: string;
   deviceName: string;
 }
@@ -106,6 +143,8 @@ export interface Device {
 }
 
 export interface DashboardSnapshot {
+  localModels: LocalModelsSnapshot;
+  workload: WorkloadSummary;
   generatedAt: string;
   range: RangeKey;
   metrics: HeadlineMetrics;

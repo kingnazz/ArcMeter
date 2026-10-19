@@ -21,6 +21,49 @@ pub struct DashboardSnapshot {
     pub sources: Vec<SourceScanResult>,
     pub subscriptions: Vec<Subscription>,
     pub device: Device,
+    pub local_models: crate::local_models::LocalModelsSnapshot,
+    pub workload: WorkloadSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadSummary {
+    pub local_tokens: i64,
+    pub cloud_tokens: i64,
+    pub local_observations: i64,
+    pub local_trend: Vec<TrendPoint>,
+}
+
+fn workload(connection: &Connection, start: DateTime<Utc>) -> Result<WorkloadSummary> {
+    let (local_tokens, cloud_tokens) = connection.query_row("SELECT
+        COALESCE(SUM(CASE WHEN provider IN ('omlx','ollama','lmstudio') THEN total_tokens ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN provider NOT IN ('omlx','ollama','lmstudio') THEN total_tokens ELSE 0 END),0)
+        FROM usage_events WHERE measurement_kind='measured' AND superseded_by_event_id IS NULL AND occurred_at>=?1",
+        [start.to_rfc3339()], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let local_observations = connection.query_row(
+        "SELECT COUNT(*) FROM local_runtime_observations WHERE observed_at>=?1",
+        [start.to_rfc3339()],
+        |r| r.get(0),
+    )?;
+    let mut statement = connection.prepare("SELECT substr(occurred_at,1,10) day, SUM(total_tokens) FROM usage_events
+        WHERE measurement_kind='measured' AND superseded_by_event_id IS NULL AND provider IN ('omlx','ollama','lmstudio')
+        AND occurred_at>=?1 GROUP BY day ORDER BY day")?;
+    let local_trend = statement
+        .query_map([start.to_rfc3339()], |r| {
+            let date: String = r.get(0)?;
+            Ok(TrendPoint {
+                label: date.get(5..).unwrap_or(&date).replace('-', "/"),
+                date,
+                tokens: r.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(WorkloadSummary {
+        local_tokens,
+        cloud_tokens,
+        local_observations,
+        local_trend,
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -160,6 +203,8 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         sources: normalized_sources(scan),
         subscriptions,
         device: database.device()?,
+        local_models: crate::local_models::snapshot(database)?,
+        workload: workload(&connection, start)?,
     })
 }
 
@@ -317,7 +362,11 @@ fn activity(
                 u.measurement_kind, u.device_id, d.friendly_name
          FROM usage_events u JOIN devices d ON d.id = u.device_id
          WHERE u.occurred_at >= ?1 AND u.superseded_by_event_id IS NULL
-         ORDER BY u.occurred_at DESC, u.id DESC LIMIT ?2 OFFSET ?3",
+         UNION ALL
+         SELECT o.id, o.provider, 'local_' || o.state, o.observed_at, o.model, NULL, 0,
+                0, 0, 0, 0, 0, 0, 0, NULL, NULL, 'runtime_status', o.device_id, d.friendly_name
+         FROM local_runtime_observations o JOIN devices d ON d.id=o.device_id WHERE o.observed_at>=?1
+         ORDER BY 4 DESC, 1 DESC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = statement.query_map(params![start.to_rfc3339(), limit, offset], |row| {
         let date: String = row.get(3)?;
@@ -466,6 +515,9 @@ fn provider_label(provider: &str) -> String {
         "claude" => "Claude Code CLI".into(),
         "grok" => "Grok Build".into(),
         "gemini" => "Gemini CLI".into(),
+        "omlx" => "oMLX".into(),
+        "ollama" => "Ollama".into(),
+        "lmstudio" => "LM Studio".into(),
         value => value.into(),
     }
 }

@@ -16,6 +16,8 @@ afterEach(() => {
 
 function snapshot(): DashboardSnapshot {
   return {
+    localModels: {runtimes:[], measuredTokensToday:0, requestsToday:null, observationsToday:0, historyStatus:"not_found"},
+    workload: {localTokens:0,cloudTokens:0,localObservations:0,localTrend:[]},
     generatedAt: now,
     range: "month",
     metrics: {

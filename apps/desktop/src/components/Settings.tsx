@@ -7,6 +7,7 @@ import { formatMinutes, formatRelativeTime, formatTokens, formatUsdTicks, provid
 import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
 import { UpdateSettingRow } from "./AppUpdater";
+import { LocalModelSettings } from "./LocalModels";
 
 interface SettingsProps {
   data: DashboardSnapshot;
@@ -33,6 +34,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
   const [syncing, setSyncing] = useState(false);
   const [activityStatus, setActivityStatus] = useState<ActivityTrackingStatus | null>(null);
   const [quotaBusy, setQuotaBusy] = useState(false);
+  const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "system");
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -156,6 +158,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
   return (
     <div className="settings-layout">
       {message ? <button className="toast" type="button" onClick={() => setMessage(null)}><Check />{message}</button> : null}
+      <LocalModelSettings data={data.localModels} onRefresh={onScan} />
       <section className="settings-section">
         <SettingsHeading title="Account" description="Secure cloud sync across your ArcMeter devices." />
         <AccountPanel auth={auth} onChange={setAuth} />
@@ -294,6 +297,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
       <section className="settings-section">
         <SettingsHeading title="Application" description="Background utility behavior on this computer." />
         <div className="settings-panel toggles-panel">
+          <div className="setting-row"><span className="setting-row-icon"><Laptop /></span><div><strong>Appearance</strong><p>Match your system or choose a theme for ArcMeter.</p></div><select aria-label="Appearance" value={theme} onChange={(e) => { const next = e.target.value; setTheme(next); document.documentElement.dataset.theme = next; void setSetting("theme", next); }}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></div>
           <div className="setting-row">
             <span className="setting-row-icon"><CloudOff /></span>
             <div><strong>Cross-device sync</strong><p>{auth.signedIn ? `Connected as ${auth.email ?? "ArcMeter user"}. Sync sends normalized metadata only.` : "Sign in to combine this computer with your other ArcMeter devices."}</p></div>

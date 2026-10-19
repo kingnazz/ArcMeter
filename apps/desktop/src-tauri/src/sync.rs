@@ -719,4 +719,67 @@ mod tests {
             .unwrap();
         assert_eq!(received, (1, 210, event_id));
     }
+
+    #[test]
+    fn local_hourly_usage_syncs_as_one_revisable_row_without_inventory_or_endpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = Database::open(directory.path().join("origin.db")).unwrap();
+        let device = origin.ensure_device("test").unwrap();
+        crate::local_models::configure(&origin, "omlx", true, Some("http://127.0.0.1:8009/v1"))
+            .unwrap();
+        let path = directory.path().join("usage.sqlite3");
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch("PRAGMA user_version=1; CREATE TABLE model_usage_hourly(timestamp_hour INTEGER,
+          model_id TEXT,requests INTEGER,prompt_tokens INTEGER,completion_tokens INTEGER,cached_tokens INTEGER);
+          INSERT INTO model_usage_hourly VALUES(1750000000,'Qwen',2,100,20,30);").unwrap();
+        crate::local_models::omlx::collect_path(&origin, &device.id, &path).unwrap();
+        let initial = pending_events(&origin, 250).unwrap();
+        assert_eq!(initial.len(), 1);
+        let payload = serde_json::to_string(&initial).unwrap();
+        for forbidden in [
+            "127.0.0.1",
+            "endpoint",
+            "models_json",
+            "requests",
+            "usage.sqlite3",
+            "prompt\"",
+            "response",
+        ] {
+            assert!(!payload.contains(forbidden), "{forbidden}");
+        }
+        mark_events_synced(&origin, &[initial[0]["id"].as_str().unwrap()]).unwrap();
+        crate::local_models::omlx::collect_path(&origin, &device.id, &path).unwrap();
+        assert!(pending_events(&origin, 250).unwrap().is_empty());
+        source
+            .execute(
+                "UPDATE model_usage_hourly SET prompt_tokens=150,completion_tokens=40,requests=3",
+                [],
+            )
+            .unwrap();
+        crate::local_models::omlx::collect_path(&origin, &device.id, &path).unwrap();
+        let revised = pending_events(&origin, 250).unwrap();
+        assert_eq!(initial[0]["id"], revised[0]["id"]);
+        let receiver = Database::open(directory.path().join("receiver.db")).unwrap();
+        receiver.ensure_device("test").unwrap();
+        apply_remote_devices(&receiver,&[json!({"id":device.id,"friendly_name":"Origin","os":"macos",
+            "architecture":"aarch64","app_version":"test","created_at":device.created_at,"last_seen_at":device.last_seen_at})]).unwrap();
+        apply_remote_events(&receiver, &initial).unwrap();
+        apply_remote_events(&receiver, &revised).unwrap();
+        apply_remote_events(&receiver, &revised).unwrap();
+        let received: (i64, i64) = Connection::open(receiver.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*),SUM(total_tokens) FROM usage_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(received, (1, 190));
+        assert_eq!(
+            crate::local_models::snapshot(&receiver)
+                .unwrap()
+                .requests_today,
+            None
+        );
+    }
 }

@@ -3,18 +3,20 @@ import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } fr
 import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult, TrendPoint } from "../types";
 import { formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
+import { LocalOverview } from "./LocalModels";
 
 interface OverviewProps {
   data: DashboardSnapshot;
   quotas?: (ProviderQuotaState | null)[];
   scanning: boolean;
   onScan: () => void;
+  onLocalModels?: () => void;
 }
-export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps) {
+export function Overview({ data, quotas = [], scanning, onScan, onLocalModels }: OverviewProps) {
   const enabledQuotas = quotas.filter((quota): quota is ProviderQuotaState => Boolean(quota?.enabled));
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <div className="page-stack overview-page">{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
+    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} workload={data.workload} onOpen={onLocalModels} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -36,6 +38,7 @@ export function Overview({ data, quotas = [], scanning, onScan }: OverviewProps)
       : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
+      <LocalOverview local={data.localModels} workload={data.workload} onOpen={onLocalModels} />
       {enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}
       <section className="hero-metrics" aria-label="Headline usage metrics">
         <div className="hero-primary">
@@ -230,7 +233,7 @@ function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
   );
 }
 
-function UsageChart({ points }: { points: TrendPoint[] }) {
+export function UsageChart({ points }: { points: TrendPoint[] }) {
   if (points.length === 0) {
     return <div className="chart-empty">Usage will appear here after the next measured event.</div>;
   }

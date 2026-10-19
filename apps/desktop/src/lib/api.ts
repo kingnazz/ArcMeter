@@ -16,6 +16,14 @@ const unavailableDevice: Device = {
 
 function emptySnapshot(range: RangeKey): DashboardSnapshot {
   return {
+    localModels: {
+      runtimes: [ ["omlx", 8000], ["ollama", 11434], ["lmstudio", 1234] ].map(([provider, port]) => ({
+        provider: String(provider), endpoint: `http://127.0.0.1:${port}${provider === "omlx" ? "/v1" : ""}`,
+        enabled: true, automatic: true, status: "not_detected", checkedAt: null, detectedAt: null,
+        diagnostic: "Open the desktop app to discover local runtimes", models: [],
+      })), measuredTokensToday: 0, requestsToday: null, observationsToday: 0, historyStatus: "not_checked",
+    },
+    workload: { localTokens: 0, cloudTokens: 0, localObservations: 0, localTrend: [] },
     generatedAt: new Date().toISOString(),
     range,
     metrics: {
@@ -59,6 +67,16 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
     subscriptions: [],
     device: unavailableDevice,
   };
+}
+
+export async function configureLocalRuntime(provider: string, enabled: boolean, endpoint: string | null): Promise<void> {
+  if (!isTauri()) throw new Error("Local runtime settings are available in the desktop app.");
+  return invoke("configure_local_runtime", { provider, enabled, endpoint });
+}
+
+export async function testLocalRuntime(provider: string, endpoint: string): Promise<string> {
+  if (!isTauri()) throw new Error("Open the desktop app to test a local connection.");
+  return invoke<string>("test_local_runtime", { provider, endpoint });
 }
 
 export async function getDashboard(range: RangeKey): Promise<DashboardSnapshot> {

@@ -10,6 +10,7 @@ mod commands;
 mod db;
 mod device;
 mod domain;
+mod local_models;
 mod pricing;
 mod quota;
 mod sessions;
@@ -50,6 +51,7 @@ struct TraySummary {
     claude: MenuItem<tauri::Wry>,
     grok: MenuItem<tauri::Wry>,
     gemini: MenuItem<tauri::Wry>,
+    local: MenuItem<tauri::Wry>,
     month: MenuItem<tauri::Wry>,
 }
 
@@ -103,6 +105,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 while let Some(state) = app_handle.try_state::<AppState>() {
                     let guard = state.scan_lock.lock().await;
+                    let _ = local_models::refresh(&state.database, &state.device_id).await;
                     let database = state.database.clone();
                     let device_id = state.device_id.clone();
                     if let Ok(Ok((report, today, month))) =
@@ -178,6 +181,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::dashboard_snapshot,
+            commands::configure_local_runtime,
+            commands::test_local_runtime,
             commands::cache_efficiency,
             commands::scan_now,
             commands::activity_page,
@@ -234,6 +239,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let claude = MenuItem::with_id(app, "claude_summary", "Claude · —", false, None::<&str>)?;
     let grok = MenuItem::with_id(app, "grok_summary", "Grok · —", false, None::<&str>)?;
     let gemini = MenuItem::with_id(app, "gemini_summary", "Gemini · —", false, None::<&str>)?;
+    let local = MenuItem::with_id(
+        app,
+        "local_summary",
+        "Local · discovering runtimes…",
+        false,
+        None::<&str>,
+    )?;
     let month = MenuItem::with_id(
         app,
         "month_summary",
@@ -247,7 +259,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &today, &codex, &claude, &grok, &gemini, &month, &open, &sync, &quit,
+            &today, &codex, &claude, &grok, &gemini, &local, &month, &open, &sync, &quit,
         ],
     )?;
 
@@ -288,6 +300,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         claude,
         grok,
         gemini,
+        local,
         month,
     });
     Ok(())
@@ -327,6 +340,18 @@ fn update_tray_summary(
     let _ = tray
         .gemini
         .set_text(provider_summary(today, "gemini", "Gemini"));
+    let loaded = today
+        .local_models
+        .runtimes
+        .iter()
+        .filter(|r| r.enabled && r.status == "healthy")
+        .flat_map(|r| &r.models)
+        .filter(|m| m.loaded == Some(true))
+        .count();
+    let _ = tray.local.set_text(format!(
+        "Local · {} measured tokens · {loaded} loaded",
+        compact_tokens(today.workload.local_tokens)
+    ));
     let _ = tray.month.set_text(format!(
         "This month · {} measured tokens",
         compact_tokens(month.metrics.measured_tokens_month)

@@ -1,6 +1,7 @@
 import { BarChart3, FolderKanban, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { BreakdownItem, CacheEfficiencyBreakdown, CacheEfficiencyReport, CacheRange, Insight, ProviderQuotaState } from "../types";
+import type { BreakdownItem, CacheEfficiencyBreakdown, CacheEfficiencyReport, CacheRange, Insight, ProviderQuotaState, WorkloadSummary } from "../types";
+import { UsageChart } from "./Overview";
 import { getCacheEfficiency } from "../lib/api";
 import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdMicrosPrecise, providerLabel } from "../lib/format";
 
@@ -11,9 +12,11 @@ interface InsightsProps {
   quotas?: (ProviderQuotaState | null)[];
   initialCache?: CacheEfficiencyReport;
   loadCache?: (range: CacheRange, provider?: string) => Promise<CacheEfficiencyReport>;
+  workload?: WorkloadSummary;
+  byProvider?: BreakdownItem[];
 }
 
-export function Insights({ insights, byModel, byProject, quotas = [], initialCache, loadCache = getCacheEfficiency }: InsightsProps) {
+export function Insights({ insights, byModel, byProject, quotas = [], initialCache, loadCache = getCacheEfficiency, workload, byProvider = [] }: InsightsProps) {
   const quotaAnalyses = quotas.flatMap((quota) => quota?.enabled ? quota.analyses : []);
   const [cacheRange, setCacheRange] = useState<CacheRange>(initialCache?.range ?? "7d");
   const [cacheProvider, setCacheProvider] = useState(initialCache?.providerFilter ?? "all");
@@ -38,7 +41,8 @@ export function Insights({ insights, byModel, byProject, quotas = [], initialCac
   }, [cacheProvider, cacheRange, loadCache]);
 
   return <div className="page-stack insights-page">
-    <section className="insight-lead"><p className="eyebrow">Deterministic analytics</p><h1>What changed, without the guesswork.</h1><p>Every observation below is computed from measured metadata. No LLM-generated narrative is involved.</p></section>
+    <section className="insight-lead"><p>Trends and comparisons from measured usage metadata.</p></section>
+    {workload ? <section className="panel local-insights"><div className="panel-heading"><div><h2>Local workload</h2><p>Selected period · measured tokens</p></div><span className="local-badge">Local / cloud</span></div><div className="local-insight-grid"><div><UsageChart points={workload.localTrend} /></div><div className="workload-ledger"><dl><div><dt>Local runtime tokens</dt><dd>{formatTokens(workload.localTokens)}</dd></div><div><dt>Cloud tool tokens</dt><dd>{formatTokens(workload.cloudTokens)}</dd></div><div><dt>Runtime observations</dt><dd>{workload.localObservations.toLocaleString()}</dd></div></dl><p>Grouped by provider. CLI traffic routed to a local server can appear in both sources; ArcMeter cannot safely correlate those requests.</p>{byProvider.length ? <Ranking title="Provider / runtime breakdown" items={byProvider} /> : <p>No measured usage in this period.</p>}</div></div></section> : null}
     <CacheEfficiencySection cache={cache} loading={cacheLoading} error={cacheError} range={cacheRange} provider={cacheProvider} onRange={setCacheRange} onProvider={setCacheProvider} />
     {quotaAnalyses.length > 0 ? <section className="panel quota-insights" aria-labelledby="quota-pace-title">
       <div className="panel-heading"><div><h2 id="quota-pace-title">Quota pace</h2><p>Provider-reported percentages · current period · same source device</p></div></div>

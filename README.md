@@ -6,6 +6,12 @@ V1 supports native token collectors for OpenAI Codex, Claude Code CLI, Grok Buil
 
 ## Stack
 
+Local Models adds passive oMLX, Ollama and LM Studio discovery, loaded-model status,
+configurable loopback endpoints and runtime observations. oMLX's dedicated hourly
+usage database can also supply authoritative token/request counts. Unsupported
+usage remains unavailable; loaded state never implies token usage. See
+[Local Models coverage, privacy and limitations](docs/LOCAL_MODELS.md).
+
 - Tauri `2.11.5` with Tauri CLI `2.11.4`
 - Rust `1.98.0` (the crate declares an MSRV of `1.88`)
 - React `19.2.8`
