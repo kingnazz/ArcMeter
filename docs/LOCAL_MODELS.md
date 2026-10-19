@@ -140,7 +140,7 @@ include forbidden extra fields and assert their absence after normalization.
 
 ## Validation and visual evidence
 
-The frontend suite includes 36 tests across four files, plus strict TypeScript,
+The frontend suite includes 37 tests across four files, plus strict TypeScript,
 ESLint and a production Vite build. New UI tests cover true empty/unknown states,
 loaded versus stale inventory, connection tests without persistence, endpoint and
 disable saves, and local Activity filtering without fabricated foreground minutes.

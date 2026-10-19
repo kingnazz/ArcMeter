@@ -59,4 +59,12 @@ describe("Local Models trust boundary", () => {
     fireEvent.click(screen.getByRole("button",{name:/oMLX · Model loaded/}));
     expect(screen.getByText(/No request, token, session or active-time measurement/)).toBeInTheDocument();
   });
+  it("shows unavailable oMLX reasoning detail instead of an invented zero", () => {
+    const row: ActivityItem = {id:"hourly",provider:"omlx",source:"omlx_usage_hourly",occurredAt:now,model:"Qwen",projectName:null,totalTokens:120,inputTokens:100,cachedInputTokens:30,cacheWriteTokens:0,cacheWrite5mTokens:0,cacheWrite1hTokens:0,outputTokens:20,reasoningTokens:0,nativeCostUsdTicks:null,estimatedApiValueUsdMicros:null,measurementKind:"measured",deviceId:"device",deviceName:"This computer"};
+    render(<Activity items={[row]} />);
+    fireEvent.click(screen.getByRole("button",{name:/oMLX · hourly usage/}));
+    expect(screen.getByText("Not reported · included in output")).toBeInTheDocument();
+    expect(screen.getByText("Input (cache included)")).toBeInTheDocument();
+    expect(screen.queryByText("Reasoning",{exact:true})).not.toBeInTheDocument();
+  });
 });
