@@ -28,6 +28,8 @@ layouts lacked a useful navigation/ledger arrangement. The pass preserves charco
 and lime, uses system fonts, reduces unused space, raises metadata contrast, and
 adds restrained chart/status transitions, visible focus and reduced-motion support.
 Native window behavior and the existing provider/quota workflows remain intact.
+Overview opens on Today and includes the three most recent usage/runtime rows so
+tool activity, current local model and measured workload can be scanned together.
 
 ## Runtime adapters and exact coverage
 
@@ -187,6 +189,9 @@ the actual browser-safe empty state; no demo telemetry was introduced:
 - Provider classification cannot establish where a CLI routed its inference.
   A request logged by a CLI and oMLX may appear in both source totals. The split
   is provider-based, not a deduplicated inference workload or cost-savings claim.
+- Upgrade the other ArcMeter devices before comparing session reports. Older
+  clients can receive the token rows but do not know to exclude hourly local
+  aggregates from their session grouping.
 - One endpoint per runtime is supported. Standard oMLX local history is collected
   independently of its configured HTTP endpoint; do not assume an overridden
   endpoint identifies the owner of that database.

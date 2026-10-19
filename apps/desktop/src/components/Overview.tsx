@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
 import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult, TrendPoint } from "../types";
-import { formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
+import { activitySourceLabel, formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 import { LocalOverview } from "./LocalModels";
 
@@ -11,12 +11,13 @@ interface OverviewProps {
   scanning: boolean;
   onScan: () => void;
   onLocalModels?: () => void;
+  onActivity?: () => void;
 }
-export function Overview({ data, quotas = [], scanning, onScan, onLocalModels }: OverviewProps) {
+export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, onActivity }: OverviewProps) {
   const enabledQuotas = quotas.filter((quota): quota is ProviderQuotaState => Boolean(quota?.enabled));
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} workload={data.workload} onOpen={onLocalModels} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
+    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} workload={data.workload} onOpen={onLocalModels} /><RecentActivity items={data.activity} onOpen={onActivity} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -99,6 +100,7 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels }:
         <p className="calculator-note">Public API list price is the closest verifiable MSRP. Providers do not publish a definitive “unsubsidized” consumer price, so values above 1× are scenarios—not claims about provider costs.</p>
       </section>
 
+      <RecentActivity items={data.activity} onOpen={onActivity} />
       <div className="overview-grid">
         <section className="panel trend-panel">
           <PanelHeader title="Usage trend" subtitle="Measured tokens only" />
@@ -126,6 +128,11 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels }:
       </div>
     </div>
   );
+}
+
+function RecentActivity({ items, onOpen }: { items: DashboardSnapshot["activity"]; onOpen?: () => void }) {
+  if (items.length === 0) return null;
+  return <section className="panel recent-activity" aria-label="Recent activity"><div className="panel-heading"><div><h2>Recent activity</h2><p>Selected period · usage and runtime observations</p></div>{onOpen ? <button className="text-button" type="button" onClick={onOpen}>View activity <ArrowUpRight /></button> : null}</div><div>{items.slice(0,3).map((item) => <div className="recent-activity-row" key={item.id}><ProviderMark provider={item.provider} size="small" /><div><strong>{activitySourceLabel(item.source,item.provider)}</strong><span>{item.model ?? (item.measurementKind === "runtime_status" ? "Runtime status change" : item.projectName ?? "Model unavailable")}</span></div><time dateTime={item.occurredAt}>{formatRelativeTime(item.occurredAt)}</time><b>{item.measurementKind === "runtime_status" ? "State change" : item.measurementKind === "activity_only" ? "1 active min" : `${formatTokens(item.totalTokens)} measured`}</b></div>)}</div></section>;
 }
 
 function LiveLimits({ quota }: { quota: ProviderQuotaState }) {

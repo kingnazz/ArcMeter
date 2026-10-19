@@ -25,6 +25,15 @@ main { max-width: 1420px; padding-top: 23px; }
 .activity-identity > strong, .activity-model > span { font-size: 12px; }
 .activity-identity > span, .activity-model > small, .activity-tokens > span { font-size: 11px; }
 .activity-main { min-height: 74px; }
+.recent-activity .panel-heading { margin-bottom: 8px; }
+.recent-activity .text-button { display: inline-flex; align-items: center; gap: 4px; }
+.recent-activity-row { display: grid; grid-template-columns: 28px minmax(0,1fr) 100px 115px; align-items: center; gap: 13px; padding-block: 12px; }
+.recent-activity-row + .recent-activity-row { border-top: 1px solid var(--border); }
+.recent-activity-row > div { min-width: 0; display: flex; align-items: baseline; gap: 12px; }
+.recent-activity-row strong { font-size: 12px; font-weight: 550; flex-shrink: 0; }
+.recent-activity-row > div > span { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-activity-row time { color: var(--text-dim); font-size: 11px; text-align: right; }
+.recent-activity-row b { font-size: 12px; font-weight: 550; text-align: right; font-variant-numeric: tabular-nums; }
 .activity-summary { gap: 12px; line-height: 1.5; }
 .filter-bar { flex-wrap: wrap; }
 .filter-bar .search-field { min-width: 190px; }
@@ -142,6 +151,11 @@ select { background: var(--surface-1); color: var(--text); border: 1px solid var
   .local-insight-grid { grid-template-columns: 1fr; gap: 10px; }
 }
 @media (max-width: 640px) {
+  .recent-activity-row { grid-template-columns: 26px minmax(0,1fr) 88px; gap: 9px; }
+  .recent-activity-row > div { flex-direction: column; gap: 4px; }
+  .recent-activity-row > div span { width: 100%; }
+  .recent-activity-row time { grid-column: 2; grid-row: auto; text-align: left; }
+  .recent-activity-row b { grid-column: 3; grid-row: auto; font-size: 11px; }
   .app-header { height: auto; grid-template-columns: 1fr 40px; padding: 13px 16px 0; }
   .app-header .brand { grid-column: 1; grid-row: 1; }
   .app-header .sync-control { grid-column: 2; grid-row: 1; }

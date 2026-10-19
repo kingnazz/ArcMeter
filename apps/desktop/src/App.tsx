@@ -25,7 +25,7 @@ const navigation: { key: NavKey; label: string; icon: typeof Gauge }[] = [
 
 export default function App() {
   const [nav, setNav] = useState<NavKey>("overview");
-  const [range, setRange] = useState<RangeKey>("month");
+  const [range, setRange] = useState<RangeKey>("today");
   const [data, setData] = useState<DashboardSnapshot | null>(null);
   const [claudeQuota, setClaudeQuota] = useState<ProviderQuotaState | null>(null);
   const [grokQuota, setGrokQuota] = useState<ProviderQuotaState | null>(null);
@@ -183,7 +183,7 @@ export default function App() {
 
         {loading && !data ? <LoadingState /> : data ? (
           <div className={loading ? "page-content refreshing" : "page-content"}>
-            {nav === "overview" ? <Overview data={data} quotas={[claudeQuota, grokQuota]} scanning={scanning} onScan={() => void scan()} onLocalModels={() => setNav("local-models")} /> : null}
+            {nav === "overview" ? <Overview data={data} quotas={[claudeQuota, grokQuota]} scanning={scanning} onScan={() => void scan()} onLocalModels={() => setNav("local-models")} onActivity={() => setNav("activity")} /> : null}
             {nav === "local-models" ? <LocalModels data={data.localModels} scanning={scanning} onScan={() => void scan()} onSettings={() => setNav("settings")} /> : null}
             {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
             {nav === "sessions" ? <Sessions /> : null}
