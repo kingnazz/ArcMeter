@@ -95,6 +95,9 @@ the initial import remains on the background blocking worker. SQLite uses WAL.
   long-ID repair/replay. Existing local rows are not destructively rewritten.
 - The local GNU test loader issue was resolved by embedding a common-controls v6
   manifest into local test executables. This does not change repository sources.
+- The loopback test harness explicitly clears inherited nonblocking mode on
+  accepted sockets (BSD/macOS) and reads complete, bounded request headers. This
+  fixes a CI timing race without increasing production collector timeouts.
 
 CI runs the full frontend suite plus Rust formatting, Clippy, tests and native
 production builds on Windows and macOS. The current PR checks provide the final

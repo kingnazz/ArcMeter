@@ -444,15 +444,21 @@ fn mock_server(
                     Err(error) => panic!("mock server unavailable: {error}"),
                 }
             };
+            // BSD/macOS may inherit O_NONBLOCK from the listener. A read timeout
+            // does not clear it; otherwise the first read races the client write.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(3)))
                 .unwrap();
-            let mut request = [0; 4096];
-            let len = stream.read(&mut request).unwrap();
-            assert!(
-                String::from_utf8_lossy(&request[..len])
-                    .starts_with(&format!("GET {path} HTTP/1.1"))
-            );
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut chunk = [0; 512];
+                let len = stream.read(&mut chunk).unwrap();
+                assert!(len > 0, "mock client closed before completing headers");
+                request.extend_from_slice(&chunk[..len]);
+                assert!(request.len() <= 4096, "mock request headers exceed limit");
+            }
+            assert!(String::from_utf8_lossy(&request).starts_with(&format!("GET {path} HTTP/1.1")));
             let body = body.to_string();
             write!(stream,"HTTP/1.1 {code} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
         }
