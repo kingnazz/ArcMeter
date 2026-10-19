@@ -17,7 +17,7 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
   const enabledQuotas = quotas.filter((quota): quota is ProviderQuotaState => Boolean(quota?.enabled));
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} workload={data.workload} onOpen={onLocalModels} /><RecentActivity items={data.activity} onOpen={onActivity} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
+    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} /><RecentActivity items={data.activity} onOpen={onActivity} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -39,17 +39,17 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
       : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
-      <LocalOverview local={data.localModels} workload={data.workload} onOpen={onLocalModels} />
+      <LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} />
       {enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}
       <section className="hero-metrics" aria-label="Headline usage metrics">
         <div className="hero-primary">
-          <p className="eyebrow">Measured tokens · selected period</p>
+          <p className="eyebrow">Telemetry tokens · selected period</p>
           <div className="metric-number">{formatTokens(metrics.measuredTokensRange)}</div>
-          <p className="metric-footnote">{metrics.measuredEventsRange.toLocaleString()} authoritative local usage events</p>
+          <p className="metric-footnote">{metrics.measuredEventsRange.toLocaleString()} source records · may include overlapping inference</p>
         </div>
         <div className="metric-divider" />
-        <Metric label="Today" value={formatTokens(metrics.measuredTokensToday)} suffix="measured" />
-        <Metric label="This month" value={formatTokens(metrics.measuredTokensMonth)} suffix="measured" />
+        <Metric label="Today" value={formatTokens(metrics.measuredTokensToday)} suffix="telemetry tokens" />
+        <Metric label="This month" value={formatTokens(metrics.measuredTokensMonth)} suffix="telemetry tokens" />
         <Metric label="Active time" value={formatMinutes(metrics.activityMinutesRange)} suffix="activity-only" />
         <Metric label="Subscriptions" value={formatUsdCents(metrics.monthlySubscriptionUsdCents)} suffix="monthly" />
       </section>
@@ -103,18 +103,18 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
       <RecentActivity items={data.activity} onOpen={onActivity} />
       <div className="overview-grid">
         <section className="panel trend-panel">
-          <PanelHeader title="Usage trend" subtitle="Measured tokens only" />
+          <PanelHeader title="Telemetry trend" subtitle="Source token counts · may overlap" />
           <UsageChart points={data.trend} />
         </section>
         <section className="panel provider-panel">
-          <PanelHeader title="By provider" subtitle="Share of selected period" />
+          <PanelHeader title="By telemetry source" subtitle="Share of recorded tokens · may overlap" />
           <BreakdownList items={data.byProvider} providerMarks />
         </section>
       </div>
 
       <div className="overview-grid overview-grid-bottom">
         <section className="panel">
-          <PanelHeader title="Top models" subtitle="Measured usage" />
+          <PanelHeader title="Top models" subtitle="Recorded tokens · may overlap" />
           <BreakdownList items={data.byModel.slice(0, 5)} />
         </section>
         <section className="panel">

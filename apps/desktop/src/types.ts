@@ -31,11 +31,12 @@ export interface LocalModelsSnapshot {
   observationsToday: number;
   historyStatus: string;
 }
-export interface WorkloadSummary {
-  localTokens: number;
-  cloudTokens: number;
-  localObservations: number;
-  localTrend: TrendPoint[];
+export interface TelemetrySummary {
+  runtimeTokens: number;
+  toolTokens: number;
+  unclassifiedTokens: number;
+  runtimeObservations: number;
+  runtimeTrend: TrendPoint[];
 }
 
 export interface HeadlineMetrics {
@@ -144,7 +145,7 @@ export interface Device {
 
 export interface DashboardSnapshot {
   localModels: LocalModelsSnapshot;
-  workload: WorkloadSummary;
+  telemetry: TelemetrySummary;
   generatedAt: string;
   range: RangeKey;
   metrics: HeadlineMetrics;

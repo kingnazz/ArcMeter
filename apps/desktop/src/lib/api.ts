@@ -23,7 +23,7 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
         diagnostic: "Open the desktop app to discover local runtimes", models: [],
       })), measuredTokensToday: 0, requestsToday: null, observationsToday: 0, historyStatus: "not_checked",
     },
-    workload: { localTokens: 0, cloudTokens: 0, localObservations: 0, localTrend: [] },
+    telemetry: { runtimeTokens: 0, toolTokens: 0, unclassifiedTokens:0,runtimeObservations: 0, runtimeTrend: [] },
     generatedAt: new Date().toISOString(),
     range,
     metrics: {

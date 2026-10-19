@@ -153,3 +153,13 @@ export function providerLabel(provider: string): string {
 }
 
 export function isLocalProvider(provider: string): boolean { return ["omlx", "ollama", "lmstudio"].includes(provider); }
+// A tool/model name cannot prove inference location. Match known collectors only.
+export function telemetryLayer(item: { provider: string; source: string; measurementKind?: string }): "runtime" | "tool" | "unknown" {
+  if ((item.provider === "omlx" && item.source === "omlx_usage_hourly") ||
+      (isLocalProvider(item.provider) && item.source.startsWith("local_"))) return "runtime";
+  const toolSources: Record<string, string> = { codex: "codex_cli", claude: "claude_code", gemini: "gemini_cli", grok: "grok_build" };
+  if (item.measurementKind === "activity_only" &&
+      ((item.provider === "claude" && item.source === "claude_desktop") ||
+       (item.provider === "grok" && item.source === "grok_web"))) return "tool";
+  return toolSources[item.provider] === item.source ? "tool" : "unknown";
+}

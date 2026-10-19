@@ -168,6 +168,64 @@ fn ollama_running_inventory_multiple_models_and_unload_reload() {
 }
 
 #[test]
+fn omlx_retained_history_replay_sanity() {
+    let (dir, db, device) = database();
+    let path = dir.path().join("usage.sqlite3");
+    let mut source = Connection::open(&path).unwrap();
+    source.execute_batch("PRAGMA user_version=1; CREATE TABLE model_usage_hourly(timestamp_hour INTEGER,model_id TEXT,
+        requests INTEGER,prompt_tokens INTEGER,completion_tokens INTEGER,cached_tokens INTEGER,
+        PRIMARY KEY(timestamp_hour,model_id));").unwrap();
+    // 400 days of hourly history for four consistently used models (38,400 buckets).
+    let hour = Utc::now().timestamp() / 3600 * 3600;
+    let transaction = source.transaction().unwrap();
+    for offset in 0..9600 {
+        for model in ["Qwen", "Gemma", "DeepSeek", "Other"] {
+            transaction
+                .execute(
+                    "INSERT INTO model_usage_hourly VALUES(?1,?2,10,10000,2000,5000)",
+                    params![hour - offset * 3600, model],
+                )
+                .unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+    let started = std::time::Instant::now();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    let first = started.elapsed();
+    let target = Connection::open(db.path()).unwrap();
+    target
+        .execute("UPDATE usage_events SET sync_status='synced'", [])
+        .unwrap();
+    let mut replay_ms = Vec::new();
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        omlx::collect_path(&db, &device, &path).unwrap();
+        replay_ms.push(started.elapsed().as_millis());
+    }
+    assert_eq!(
+        target
+            .query_row("SELECT COUNT(*) FROM usage_events", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        38400
+    );
+    assert_eq!(
+        target
+            .query_row(
+                "SELECT COUNT(*) FROM usage_events WHERE sync_status='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    println!(
+        "oMLX 38400 buckets: initial={}ms, unchanged replay={replay_ms:?}ms",
+        first.as_millis()
+    );
+}
+
+#[test]
 fn omlx_history_replay_growth_restart_and_reset_are_idempotent() {
     let (dir, db, device) = database();
     let path = dir.path().join("usage.sqlite3");
@@ -198,6 +256,39 @@ fn omlx_history_replay_growth_restart_and_reset_are_idempotent() {
     source.execute("UPDATE model_usage_hourly SET requests=3,prompt_tokens=150,completion_tokens=30,cached_tokens=60", []).unwrap();
     omlx::collect_path(&db, &device, &path).unwrap();
     assert_eq!(totals(), (1, 180));
+    connection
+        .execute("UPDATE usage_events SET sync_status='synced'", [])
+        .unwrap();
+    source
+        .execute("UPDATE model_usage_hourly SET requests=4", [])
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT requests FROM local_usage_details", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT sync_status FROM usage_events", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "synced"
+    );
+    // Missing local detail is repaired from source even when token counters are unchanged.
+    connection
+        .execute("DELETE FROM local_usage_details", [])
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT requests FROM local_usage_details", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
     source.execute("UPDATE model_usage_hourly SET requests=1,prompt_tokens=10,completion_tokens=2,cached_tokens=0", []).unwrap();
     omlx::collect_path(&db, &device, &path).unwrap();
     assert_eq!(totals(), (1, 180)); // clearing/resetting history never invents a delta
@@ -215,6 +306,22 @@ fn omlx_history_replay_growth_restart_and_reset_are_idempotent() {
         .unwrap();
     omlx::collect_path(&db, &device, &path).unwrap();
     assert_eq!(totals(), (2, 187));
+    // Historical buckets can grow after a later bucket has already been ingested.
+    source
+        .execute(
+            "INSERT INTO model_usage_hourly VALUES(?1,'Earlier',1,50,10,5)",
+            [hour - 7200],
+        )
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    source
+        .execute(
+            "UPDATE model_usage_hourly SET prompt_tokens=80 WHERE model_id='Earlier'",
+            [],
+        )
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    assert_eq!(totals(), (3, 277));
     let page = crate::sessions::session_page(
         &db,
         crate::sessions::SessionQuery {
@@ -229,20 +336,20 @@ fn omlx_history_replay_growth_restart_and_reset_are_idempotent() {
     .unwrap();
     assert_eq!(page.total_count, 0); // hourly buckets are not sessions
     let dashboard = crate::analytics::dashboard(&db, "all", &Default::default()).unwrap();
-    assert_eq!(dashboard.workload.local_tokens, 187);
-    assert_eq!(dashboard.workload.cloud_tokens, 0);
-    assert_eq!(dashboard.activity.len(), 2);
+    assert_eq!(dashboard.telemetry.runtime_tokens, 277);
+    assert_eq!(dashboard.telemetry.tool_tokens, 0);
+    assert_eq!(dashboard.activity.len(), 3);
     assert_eq!(dashboard.metrics.activity_minutes_range, 0);
     assert_eq!(
         crate::cache_efficiency::report(&db, "all", Some("omlx"))
             .unwrap()
             .summary
             .cached_input_tokens,
-        60
+        65
     );
     source.pragma_update(None, "user_version", 2).unwrap();
     assert!(omlx::collect_path(&db, &device, &path).is_err());
-    assert_eq!(totals(), (2, 187));
+    assert_eq!(totals(), (3, 277));
 }
 
 #[tokio::test]

@@ -1,5 +1,8 @@
 # Local Models
 
+The final accuracy audit, replay benchmark, screenshots and explicit outstanding
+live-host checks are recorded in [PR #2 acceptance](ACCEPTANCE_PR2.md).
+
 ArcMeter discovers oMLX, Ollama and LM Studio passively on this computer. Inventory
 and runtime observations are distinct from measured usage. No inference requests,
 model loads/unloads, proxy, prompt capture or hardware monitoring are involved.
@@ -29,7 +32,7 @@ and lime, uses system fonts, reduces unused space, raises metadata contrast, and
 adds restrained chart/status transitions, visible focus and reduced-motion support.
 Native window behavior and the existing provider/quota workflows remain intact.
 Overview opens on Today and includes the three most recent usage/runtime rows so
-tool activity, current local model and measured workload can be scanned together.
+tool activity, current local model and separate telemetry layers can be scanned together.
 
 ## Runtime adapters and exact coverage
 
@@ -140,7 +143,7 @@ include forbidden extra fields and assert their absence after normalization.
 
 ## Validation and visual evidence
 
-The frontend suite includes 37 tests across four files, plus strict TypeScript,
+The frontend suite includes 41 tests across four files, plus strict TypeScript,
 ESLint and a production Vite build. New UI tests cover true empty/unknown states,
 loaded versus stale inventory, connection tests without persistence, endpoint and
 disable saves, and local Activity filtering without fabricated foreground minutes.
@@ -159,8 +162,8 @@ denied, the Rust suite and an unbundled native production build on Windows 2025 
 macOS 15. Check [PR #2](https://github.com/kingnazz/ArcMeter/pull/2) for final-revision
 results. Both native test jobs passed the initial implementation checkpoint.
 Local Windows validation additionally completed an unbundled GNU debug build.
-Local test execution hit a Windows GNU loader failure before tests started
-(`STATUS_ENTRYPOINT_NOT_FOUND`); CI provides independent native execution evidence.
+Local native tests now run successfully after embedding the missing common-controls
+manifest into local GNU test build artifacts. No repository workaround was needed.
 No live Supabase deployment, release, installer publication or live oMLX inference
 was performed.
 
@@ -187,14 +190,15 @@ the actual browser-safe empty state; no demo telemetry was introduced:
   batches and failures are inherited; deleting/resetting the source within an
   existing hour can lead to undercounting, never manufactured replacement usage.
 - Provider classification cannot establish where a CLI routed its inference.
-  A request logged by a CLI and oMLX may appear in both source totals. The split
-  is provider-based, not a deduplicated inference workload or cost-savings claim.
+  A request logged by a CLI and oMLX may appear in both source totals. Overview
+  and Insights report separate local runtime/tool telemetry with unknown tool
+  routing. Combined counts are labeled telemetry tokens and may overlap. No
+  inference-location split or cross-source deduplication is calculated.
 - Upgrade the other ArcMeter devices before comparing session reports. Older
   clients can receive the token rows but do not know to exclude hourly local
   aggregates from their session grouping.
 - One endpoint per runtime is supported. Standard oMLX local history is collected
   independently of its configured HTTP endpoint; do not assume an overridden
   endpoint identifies the owner of that database.
-- Next pass: validate on a live Apple Silicon oMLX host, add explicit source
-  coverage/double-count controls, then consider opt-in metadata-only native
+- Next pass: validate on a live Apple Silicon oMLX host, then consider opt-in metadata-only native
   request streams for Ollama/LM Studio if an authoritative passive interface exists.

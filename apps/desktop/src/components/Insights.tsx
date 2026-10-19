@@ -1,6 +1,6 @@
 import { BarChart3, FolderKanban, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { BreakdownItem, CacheEfficiencyBreakdown, CacheEfficiencyReport, CacheRange, Insight, ProviderQuotaState, WorkloadSummary } from "../types";
+import type { BreakdownItem, CacheEfficiencyBreakdown, CacheEfficiencyReport, CacheRange, Insight, ProviderQuotaState, TelemetrySummary } from "../types";
 import { UsageChart } from "./Overview";
 import { getCacheEfficiency } from "../lib/api";
 import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdMicrosPrecise, providerLabel } from "../lib/format";
@@ -12,11 +12,11 @@ interface InsightsProps {
   quotas?: (ProviderQuotaState | null)[];
   initialCache?: CacheEfficiencyReport;
   loadCache?: (range: CacheRange, provider?: string) => Promise<CacheEfficiencyReport>;
-  workload?: WorkloadSummary;
+  telemetry?: TelemetrySummary;
   byProvider?: BreakdownItem[];
 }
 
-export function Insights({ insights, byModel, byProject, quotas = [], initialCache, loadCache = getCacheEfficiency, workload, byProvider = [] }: InsightsProps) {
+export function Insights({ insights, byModel, byProject, quotas = [], initialCache, loadCache = getCacheEfficiency, telemetry, byProvider = [] }: InsightsProps) {
   const quotaAnalyses = quotas.flatMap((quota) => quota?.enabled ? quota.analyses : []);
   const [cacheRange, setCacheRange] = useState<CacheRange>(initialCache?.range ?? "7d");
   const [cacheProvider, setCacheProvider] = useState(initialCache?.providerFilter ?? "all");
@@ -41,8 +41,8 @@ export function Insights({ insights, byModel, byProject, quotas = [], initialCac
   }, [cacheProvider, cacheRange, loadCache]);
 
   return <div className="page-stack insights-page">
-    <section className="insight-lead"><p>Trends and comparisons from measured usage metadata.</p></section>
-    {workload ? <section className="panel local-insights"><div className="panel-heading"><div><h2>Local workload</h2><p>Selected period · measured tokens</p></div><span className="local-badge">Local / cloud</span></div><div className="local-insight-grid"><div><UsageChart points={workload.localTrend} /></div><div className="workload-ledger"><dl><div><dt>Local runtime tokens</dt><dd>{formatTokens(workload.localTokens)}</dd></div><div><dt>Cloud tool tokens</dt><dd>{formatTokens(workload.cloudTokens)}</dd></div><div><dt>Runtime observations</dt><dd>{workload.localObservations.toLocaleString()}</dd></div></dl><p>Grouped by provider. CLI traffic routed to a local server can appear in both sources; ArcMeter cannot safely correlate those requests.</p>{byProvider.length ? <Ranking title="Provider / runtime breakdown" items={byProvider} /> : <p>No measured usage in this period.</p>}</div></div></section> : null}
+    <section className="insight-lead"><p>Trends and comparisons from telemetry metadata. Source totals may overlap and do not measure unique inference.</p></section>
+    {telemetry ? <section className="panel local-insights"><div className="panel-heading"><div><h2>Telemetry layers</h2><p>Selected period · local runtime token trend</p></div><span className="local-badge">Source metadata</span></div><div className="local-insight-grid"><div><UsageChart points={telemetry.runtimeTrend} /></div><div className="telemetry-ledger"><dl><div><dt>Local runtime telemetry</dt><dd>{formatTokens(telemetry.runtimeTokens)}</dd></div><div><dt>Tool telemetry</dt><dd>{formatTokens(telemetry.toolTokens)}</dd></div>{telemetry.unclassifiedTokens > 0 ? <div><dt>Unclassified telemetry</dt><dd>{formatTokens(telemetry.unclassifiedTokens)}</dd></div> : null}<div><dt>Runtime observations</dt><dd>{telemetry.runtimeObservations.toLocaleString()}</dd></div></dl><p>Tool activity does not establish inference location. Codex, Claude, Gemini and Grok routing is unknown. Hosted inference is not established by these collectors; oMLX history measures local runtime inference.</p><p>Tools can route to local runtimes, so the same inference may appear in both layers. Counts are retained separately without subtraction or cross-source deduplication.</p>{byProvider.length ? <Ranking title="Telemetry by source · may overlap" items={byProvider} /> : <p>No measured telemetry in this period.</p>}</div></div></section> : null}
     <CacheEfficiencySection cache={cache} loading={cacheLoading} error={cacheError} range={cacheRange} provider={cacheProvider} onRange={setCacheRange} onProvider={setCacheProvider} />
     {quotaAnalyses.length > 0 ? <section className="panel quota-insights" aria-labelledby="quota-pace-title">
       <div className="panel-heading"><div><h2 id="quota-pace-title">Quota pace</h2><p>Provider-reported percentages · current period · same source device</p></div></div>

@@ -215,13 +215,15 @@ pub fn snapshot(database: &Database) -> Result<LocalModelsSnapshot> {
     let start = crate::analytics::range_start("today", Utc::now()).to_rfc3339();
     let tokens = connection.query_row(
         "SELECT COALESCE(SUM(total_tokens),0) FROM usage_events
-        WHERE provider IN ('omlx','ollama','lmstudio') AND measurement_kind='measured'
+        WHERE provider='omlx' AND source='omlx_usage_hourly' AND measurement_kind='measured'
         AND superseded_by_event_id IS NULL AND occurred_at>=?1 AND device_id=?2",
         params![&start, device_id],
         |r| r.get(0),
     )?;
     let requests: i64 = connection.query_row("SELECT COALESCE(SUM(l.requests),0) FROM local_usage_details l
-        JOIN usage_events u ON u.id=l.event_id WHERE occurred_at>=?1 AND superseded_by_event_id IS NULL", [&start], |r| r.get(0))?;
+        JOIN usage_events u ON u.id=l.event_id WHERE u.provider='omlx' AND u.source='omlx_usage_hourly'
+        AND u.measurement_kind='measured' AND u.occurred_at>=?1 AND u.device_id=?2 AND u.superseded_by_event_id IS NULL",
+        params![&start, device_id], |r| r.get(0))?;
     let observations = connection.query_row(
         "SELECT COUNT(*) FROM local_runtime_observations WHERE observed_at>=?1",
         [&start],

@@ -1,7 +1,7 @@
 import { ChevronDown, Filter, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ActivityItem } from "../types";
-import { activitySourceLabel, formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, formatUsdMicros, formatUsdTicks, isLocalProvider, providerLabel } from "../lib/format";
+import { activitySourceLabel, formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, formatUsdMicros, formatUsdTicks, telemetryLayer, providerLabel } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
 
 interface ActivityProps {
@@ -12,7 +12,7 @@ interface ActivityProps {
 }
 export function Activity({ items, hasMore = false, loadingMore = false, onLoadMore }: ActivityProps) {
   const [provider, setProvider] = useState("all");
-  const [location, setLocation] = useState("all");
+  const [layer, setLayer] = useState("all");
   const [device, setDevice] = useState("all");
   const [project, setProject] = useState("all");
   const [model, setModel] = useState("all");
@@ -27,8 +27,7 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
   }), [items]);
 
   const filtered = useMemo(() => items.filter((item) => {
-    if (location === "local" && !isLocalProvider(item.provider)) return false;
-    if (location === "cloud" && isLocalProvider(item.provider)) return false;
+    if (layer !== "all" && telemetryLayer(item) !== layer) return false;
     if (provider !== "all" && item.provider !== provider) return false;
     if (device !== "all" && item.deviceName !== device) return false;
     if (project !== "all" && item.projectName !== project) return false;
@@ -38,26 +37,26 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
       if (!haystack.includes(query.toLowerCase())) return false;
     }
     return true;
-  }), [device, items, model, project, provider, query, location]);
+  }), [device, items, model, project, provider, query, layer]);
 
   const groups = groupByDate(filtered);
-  const hasFilters = [provider, device, project, model, location].some((value) => value !== "all") || query.length > 0;
+  const hasFilters = [provider, device, project, model, layer].some((value) => value !== "all") || query.length > 0;
 
   return (
     <div className="page-stack activity-page">
       <section className="filter-bar">
         <div className="search-field"><Search /><input aria-label="Search activity" placeholder="Search activity" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
         <FilterSelect label="Provider" value={provider} onChange={setProvider} options={options.providers.map((value) => ({ value, label: providerLabel(value) }))} />
-        <FilterSelect label="Location" value={location} onChange={setLocation} options={[{ value: "local", label: "Local runtimes" }, { value: "cloud", label: "Cloud tools" }]} />
+        <FilterSelect label="Telemetry layer" value={layer} onChange={setLayer} options={[{ value: "runtime", label: "Local runtime telemetry" }, { value: "tool", label: "Tool telemetry · routing unknown" }, { value: "unknown", label: "Unclassified telemetry" }]} />
         <FilterSelect label="Device" value={device} onChange={setDevice} options={options.devices.map(asOption)} />
         <FilterSelect label="Project" value={project} onChange={setProject} options={options.projects.map(asOption)} />
         <FilterSelect label="Model" value={model} onChange={setModel} options={options.models.map(asOption)} />
-        {hasFilters ? <button className="text-button" type="button" onClick={() => { setProvider("all"); setDevice("all"); setProject("all"); setModel("all"); setQuery(""); setLocation("all"); }}>Clear</button> : null}
+        {hasFilters ? <button className="text-button" type="button" onClick={() => { setProvider("all"); setDevice("all"); setProject("all"); setModel("all"); setQuery(""); setLayer("all"); }}>Clear</button> : null}
       </section>
 
       <div className="activity-summary">
         <div><strong>{filtered.length.toLocaleString()}</strong> shown · {items.length.toLocaleString()} loaded</div>
-        <span>Prompts and responses are never displayed or stored by ArcMeter.</span>
+        <span>Telemetry totals may overlap across sources. Prompts and responses are never stored.</span>
       </div>
 
       {groups.length === 0 ? (
@@ -74,7 +73,7 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
                       <button type="button" className="activity-main" onClick={() => setExpanded(expanded === item.id ? null : item.id)} aria-expanded={expanded === item.id}>
                         <time>{formatActivityTime(item.occurredAt)}</time>
                         <ProviderMark provider={item.provider} />
-                        <div className="activity-identity"><strong>{activitySourceLabel(item.source, item.provider)}</strong><span>{isLocalProvider(item.provider) ? <b className="local-badge">Local</b> : null}{item.measurementKind === "runtime_status" ? "Runtime observation" : item.measurementKind === "activity_only" ? "Foreground activity" : item.source === "omlx_usage_hourly" ? "Hour beginning at shown time" : item.projectName ?? "Unknown project"}</span></div>
+                        <div className="activity-identity"><strong>{activitySourceLabel(item.source, item.provider)}</strong><span><b className="local-badge">{telemetryLayer(item) === "runtime" ? "Local runtime" : telemetryLayer(item) === "tool" ? "Tool · route unknown" : "Route unknown"}</b>{item.measurementKind === "runtime_status" ? "Runtime observation" : item.measurementKind === "activity_only" ? "Foreground activity" : item.source === "omlx_usage_hourly" ? "Hour beginning at shown time" : item.projectName ?? "Unknown project"}</span></div>
                         <div className="activity-model"><span>{item.measurementKind === "activity_only" ? "Token telemetry unavailable" : item.model ?? (item.measurementKind === "runtime_status" ? "Runtime status change" : "Model unavailable")}</span><small>{item.deviceName}</small></div>
                         <div className="activity-tokens"><strong>{item.measurementKind === "runtime_status" ? "—" : item.measurementKind === "activity_only" ? "1 min" : formatTokens(item.totalTokens)}</strong><span>{item.measurementKind === "runtime_status" ? "state change" : item.source === "omlx_usage_hourly" ? "measured / hour" : item.measurementKind.replace("_", " ")}</span></div>
                         <ChevronDown className="activity-chevron" />
@@ -152,5 +151,5 @@ function daySummary(items: ActivityItem[]): string {
   const measured = items.filter((item) => item.measurementKind === "measured").reduce((sum, item) => sum + item.totalTokens, 0);
   const minutes = items.filter((item) => item.measurementKind === "activity_only").length;
   const observations = items.filter((item) => item.measurementKind === "runtime_status").length;
-  return [measured > 0 ? `${formatTokens(measured)} measured` : "", minutes ? `${minutes} active min` : "", observations ? `${observations} runtime observations` : ""].filter(Boolean).join(" · ") || "No measured usage";
+  return [measured > 0 ? `${formatTokens(measured)} telemetry tokens` : "", minutes ? `${minutes} active min` : "", observations ? `${observations} runtime observations` : ""].filter(Boolean).join(" · ") || "No measured usage";
 }

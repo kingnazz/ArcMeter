@@ -26,10 +26,15 @@ describe("Local Models trust boundary", () => {
   it("shows all loaded models, but a stale inventory never appears as running", () => {
     const model = {id:"Qwen",name:"Qwen",loaded:true,contextLength:8192,quantization:null,parameters:null,sizeBytes:null,firstSeen:now,lastSeen:now,lastActivityAt:null};
     const data = local([runtime({status:"healthy",models:[model,{...model,id:"Gemma",name:"Gemma"}]}),runtime({provider:"ollama",status:"unavailable",models:[{...model,id:"Stale",name:"Stale"}]})]);
-    render(<LocalOverview local={data} workload={{localTokens:100,cloudTokens:300,localObservations:0,localTrend:[]}} />);
+    render(<LocalOverview local={data} telemetry={{runtimeTokens:100,toolTokens:300,unclassifiedTokens:0,runtimeObservations:0,runtimeTrend:[]}} />);
     expect(screen.getByText("Qwen")).toBeInTheDocument();
     expect(screen.getByText(/2 models loaded/)).toBeInTheDocument();
-    expect(screen.getByText("25% local")).toBeInTheDocument();
+    expect(screen.getByText("Local runtime telemetry")).toBeInTheDocument();
+    expect(screen.getByText("· routing unknown")).toBeInTheDocument();
+    expect(screen.getByText("100")).toBeInTheDocument();
+    expect(screen.getByText("300")).toBeInTheDocument();
+    expect(screen.getByText(/may overlap across layers/)).toBeInTheDocument();
+    expect(screen.queryByText(/% local|cloud|workload/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Stale")).not.toBeInTheDocument();
   });
   it("tests draft endpoints without saving and persists manual and disabled choices explicitly", async () => {
@@ -50,8 +55,8 @@ describe("Local Models trust boundary", () => {
   });
   it("keeps runtime observations separate from measured events and foreground minutes", () => {
     const row: ActivityItem = {id:"observation",provider:"omlx",source:"local_model_loaded",occurredAt:now,model:"Qwen",projectName:null,totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteTokens:0,cacheWrite5mTokens:0,cacheWrite1hTokens:0,outputTokens:0,reasoningTokens:0,nativeCostUsdTicks:null,estimatedApiValueUsdMicros:null,measurementKind:"runtime_status",deviceId:"device",deviceName:"This computer"};
-    render(<Activity items={[row,{...row,id:"cloud",provider:"codex",source:"codex_cli",measurementKind:"measured",totalTokens:120}]} />);
-    fireEvent.change(screen.getByLabelText("Location"),{target:{value:"local"}});
+    render(<Activity items={[row,{...row,id:"tool",provider:"codex",source:"codex_cli",measurementKind:"measured",totalTokens:120}]} />);
+    fireEvent.change(screen.getByLabelText("Telemetry layer"),{target:{value:"runtime"}});
     expect(screen.getByText("oMLX · Model loaded")).toBeInTheDocument();
     expect(screen.queryByRole("button",{name:/Codex/})).not.toBeInTheDocument();
     expect(screen.getByText("1 runtime observations")).toBeInTheDocument();
@@ -66,5 +71,17 @@ describe("Local Models trust boundary", () => {
     expect(screen.getByText("Not reported · included in output")).toBeInTheDocument();
     expect(screen.getByText("Input (cache included)")).toBeInTheDocument();
     expect(screen.queryByText("Reasoning",{exact:true})).not.toBeInTheDocument();
+  });
+  it("keeps simultaneous Codex and oMLX rows with the same model and hour separate", () => {
+    const row: ActivityItem = {id:"runtime",provider:"omlx",source:"omlx_usage_hourly",occurredAt:now,model:"Qwen",projectName:null,totalTokens:120,inputTokens:100,cachedInputTokens:30,cacheWriteTokens:0,cacheWrite5mTokens:0,cacheWrite1hTokens:0,outputTokens:20,reasoningTokens:0,nativeCostUsdTicks:null,estimatedApiValueUsdMicros:null,measurementKind:"measured",deviceId:"device",deviceName:"This computer"};
+    render(<Activity items={[row,{...row,id:"tool",provider:"codex",source:"codex_cli"}]} />);
+    expect(screen.getAllByText("120")).toHaveLength(2);
+    expect(screen.getByText(/240 telemetry tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/Telemetry totals may overlap/)).toBeInTheDocument();
+    expect(screen.getByText("Tool · route unknown")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Telemetry layer"),{target:{value:"tool"}});
+    expect(screen.queryByRole("button",{name:/oMLX · hourly usage/})).not.toBeInTheDocument();
+    expect(screen.getByRole("button",{name:/Codex/})).toBeInTheDocument();
+    expect(screen.queryByText(/cloud tools|% local|unique workload/i)).not.toBeInTheDocument();
   });
 });

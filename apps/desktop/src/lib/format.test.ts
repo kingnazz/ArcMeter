@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdCents, formatUsdMicros, providerLabel } from "./format";
+import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdCents, formatUsdMicros, providerLabel, telemetryLayer } from "./format";
 
 describe("formatting", () => {
+  it("classifies the telemetry source without inferring a tool's route", () => {
+    for (const [provider, source] of [["codex","codex_cli"],["claude","claude_code"],["gemini","gemini_cli"],["grok","grok_build"]]) {
+      expect(telemetryLayer({provider:provider!,source:source!})).toBe("tool");
+    }
+    expect(telemetryLayer({provider:"omlx",source:"omlx_usage_hourly"})).toBe("runtime");
+    expect(telemetryLayer({provider:"omlx",source:"undocumented"})).toBe("unknown");
+    expect(telemetryLayer({provider:"hosted-looking-name",source:"unknown"})).toBe("unknown");
+  });
   it("keeps tokens and currency semantically distinct", () => {
     expect(formatTokens(31_800_000)).toBe("31.8M");
     expect(formatUsdCents(10_000)).toBe("$100");

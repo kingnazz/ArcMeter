@@ -187,7 +187,7 @@ export default function App() {
             {nav === "local-models" ? <LocalModels data={data.localModels} scanning={scanning} onScan={() => void scan()} onSettings={() => setNav("settings")} /> : null}
             {nav === "activity" ? <Activity items={data.activity} hasMore={activityHasMore} loadingMore={loadingActivity} onLoadMore={loadOlderActivity} /> : null}
             {nav === "sessions" ? <Sessions /> : null}
-            {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} quotas={[claudeQuota, grokQuota]} workload={data.workload} byProvider={data.byProvider} /> : null}
+            {nav === "insights" ? <Insights insights={data.insights} byModel={data.byModel} byProject={data.byProject} quotas={[claudeQuota, grokQuota]} telemetry={data.telemetry} byProvider={data.byProvider} /> : null}
             {nav === "settings" ? <Settings data={data} claudeQuota={claudeQuota} grokQuota={grokQuota} scanning={scanning} onScan={scan} onSync={syncNow} onSaveSubscription={updateSubscription} onRenameDevice={updateDevice} onToggleClaudeQuota={async (enabled) => setClaudeQuota(await setClaudeQuotaEnabled(enabled))} onRefreshClaudeQuota={async () => setClaudeQuota(await refreshClaudeQuota())} onToggleGrokQuota={async (enabled) => setGrokQuota(await setGrokQuotaEnabled(enabled))} onRefreshGrokQuota={async () => setGrokQuota(await refreshGrokQuota())} /> : null}
           </div>
         ) : null}

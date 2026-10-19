@@ -5,9 +5,18 @@ use crate::domain::{SourceType, TokenCounts, UsageEvent};
 use chrono::{DateTime, Utc};
 use directories::UserDirs;
 use rusqlite::{Connection, OpenFlags, params};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub const SOURCE: &str = "omlx_usage_hourly";
+
+struct HighWater {
+    id: String,
+    input: i64,
+    output: i64,
+    cached: i64,
+    requests: Option<i64>,
+}
 
 pub fn collect(database: &Database, device: &str) -> Result<()> {
     let base = std::env::var_os("OMLX_BASE_PATH")
@@ -49,6 +58,29 @@ pub fn collect_path(database: &Database, device: &str, path: &Path) -> Result<()
     let mut target = Connection::open(database.path())?;
     target.busy_timeout(std::time::Duration::from_secs(5))?;
     let transaction = target.transaction()?;
+    // The canonical ledger is durable per-bucket collector state. Re-read the
+    // bounded source so late history changes/resets remain safe, but avoid
+    // hashing and issuing two writes for every unchanged bucket every minute.
+    let high_water = {
+        let mut statement = transaction.prepare("SELECT u.model,u.native_event_id,u.id,u.input_tokens,
+            u.output_tokens,u.cached_input_tokens,d.requests FROM usage_events u
+            LEFT JOIN local_usage_details d ON d.event_id=u.id
+            WHERE u.provider='omlx' AND u.source=?1 AND u.device_id=?2 AND u.measurement_kind='measured'
+              AND u.superseded_by_event_id IS NULL")?;
+        let rows = statement.query_map(params![SOURCE, device], |r| {
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                HighWater {
+                    id: r.get(2)?,
+                    input: r.get(3)?,
+                    output: r.get(4)?,
+                    cached: r.get(5)?,
+                    requests: r.get(6)?,
+                },
+            ))
+        })?;
+        rows.collect::<std::result::Result<HashMap<_, _>, _>>()?
+    };
     let now = Utc::now();
     let mut seen = 0;
     while let Some(row) = rows.next()? {
@@ -77,12 +109,28 @@ pub fn collect_path(database: &Database, device: &str, path: &Path) -> Result<()
         let Some(total) = input.checked_add(output) else {
             continue;
         };
+        let hour_id = hour.to_string();
+        if let Some(known) = high_water.get(&(model.clone(), hour_id.clone())) {
+            let tokens_grew = input >= known.input
+                && output >= known.output
+                && cached >= known.cached
+                && (input > known.input || output > known.output || cached > known.cached);
+            if !tokens_grew {
+                // Request-only growth is local metadata, not a token revision.
+                if known.requests.is_none_or(|previous| requests > previous) {
+                    transaction.execute("INSERT INTO local_usage_details(event_id,requests) VALUES(?1,?2)
+                        ON CONFLICT(event_id) DO UPDATE SET requests=MAX(requests,excluded.requests)",
+                        params![known.id, requests])?;
+                }
+                continue;
+            }
+        }
         // This is a bucket identity, never a fabricated session or request identity.
         let mut event = UsageEvent::measured(
             "omlx",
             SOURCE,
             crate::domain::deterministic_event_id("omlx-hour", device, &model),
-            hour.to_string(),
+            hour_id,
             time,
             Some(model),
             None,

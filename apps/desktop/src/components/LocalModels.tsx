@@ -1,6 +1,6 @@
 import { ArrowUpRight, Cpu, Radio, RefreshCw, Server, ShieldCheck } from "lucide-react";
 import { useState } from "react";
-import type { LocalModelsSnapshot, LocalRuntime, WorkloadSummary } from "../types";
+import type { LocalModelsSnapshot, LocalRuntime, TelemetrySummary } from "../types";
 import { formatRelativeTime, formatTokens, providerLabel } from "../lib/format";
 import { configureLocalRuntime, testLocalRuntime } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
@@ -9,14 +9,12 @@ export function RuntimeStatus({ runtime }: { runtime: LocalRuntime }) {
   return <span className={`runtime-status ${runtime.status === "healthy" ? "online" : ""}`}><i />{!runtime.enabled ? "Disabled" : runtime.status === "healthy" ? "API reachable" : runtime.status === "stale" ? "Stale" : runtime.status === "not_detected" ? "Not detected" : "Unavailable"}</span>;
 }
 
-export function LocalOverview({ local, workload, onOpen }: { local: LocalModelsSnapshot; workload: WorkloadSummary; onOpen?: () => void }) {
+export function LocalOverview({ local, telemetry, onOpen }: { local: LocalModelsSnapshot; telemetry: TelemetrySummary; onOpen?: () => void }) {
   const running = local.runtimes.flatMap((r) => r.enabled && r.status === "healthy" ? r.models.filter((m) => m.loaded).map((m) => ({ runtime: r, model: m })) : []);
   const first = running[0];
-  const total = workload.localTokens + workload.cloudTokens;
-  const share = total > 0 ? workload.localTokens / total * 100 : 0;
-  return <section className="local-overview" aria-label="Local and cloud usage">
+  return <section className="local-overview" aria-label="Runtime and tool telemetry">
     <div className="local-now"><Cpu /><div><span className="eyebrow">Local · running now</span><strong title={first?.model.id}>{first?.model.name ?? "No loaded local model detected"}</strong><small>{first ? `${providerLabel(first.runtime.provider)} · ${running.length > 1 ? `${running.length} models loaded` : "API reachable"}` : "Automatic discovery · oMLX, Ollama, LM Studio"}</small></div>{onOpen ? <button type="button" aria-label="Open Local Models" onClick={onOpen}><ArrowUpRight /></button> : null}</div>
-    <div className="workload-split"><div><span>Measured workload</span><strong>{total ? `${share.toFixed(0)}% local` : "Awaiting measured usage"}</strong></div><div className="split-track" aria-label={`${formatTokens(workload.localTokens)} local tokens, ${formatTokens(workload.cloudTokens)} cloud tool tokens`}><i style={{ width: `${share}%` }} /></div><div className="split-legend"><span><i />Local <b>{formatTokens(workload.localTokens)}</b></span><span><i />Cloud tools <b>{formatTokens(workload.cloudTokens)}</b></span></div><small>Selected period · measured tokens only</small></div>
+    <div className="telemetry-layers"><div><span>Local runtime telemetry</span><strong>{formatTokens(telemetry.runtimeTokens)}</strong></div><div><span>Tool telemetry <small>· routing unknown</small></span><strong>{formatTokens(telemetry.toolTokens)}</strong></div>{telemetry.unclassifiedTokens > 0 ? <div><span>Unclassified telemetry</span><strong>{formatTokens(telemetry.unclassifiedTokens)}</strong></div> : null}<small>Selected period · token counts may overlap across layers.</small></div>
   </section>;
 }
 
@@ -29,7 +27,7 @@ export function LocalModels({ data, scanning, onScan, onSettings }: { data: Loca
         {running.length ? running.map(({runtime,model}) => <article className="running-model" key={`${runtime.provider}:${model.id}`}><ProviderMark provider={runtime.provider} /><div><h3>{model.name}</h3><p>{providerLabel(runtime.provider)} <span className="local-badge">Local</span></p><small>Last accessed {model.lastActivityAt ? formatRelativeTime(model.lastActivityAt) : "not reported"}</small></div><span className="runtime-status online"><i />Loaded</span></article>) : <div className="runtime-empty"><Cpu /><h3>No loaded model detected</h3><p>Start a local runtime and load a model. ArcMeter checks automatically every minute.</p><button type="button" className="text-button" onClick={onSettings}>Configure endpoints <ArrowUpRight /></button></div>}
         <p className="local-qualifier">Loaded state shows availability. It does not imply inference or token usage.</p>
       </div>
-      <div className="local-today"><p className="eyebrow">Today · this computer</p><dl><div><dt>Measured local tokens</dt><dd>{data.measuredTokensToday ? formatTokens(data.measuredTokensToday) : "—"}</dd></div><div><dt>oMLX requests</dt><dd>{data.requestsToday === null ? "—" : data.requestsToday.toLocaleString()}</dd></div><div><dt>Runtime observations</dt><dd>{data.observationsToday.toLocaleString()}</dd></div><div><dt>Sessions / active time</dt><dd className="unknown-value">Not reported</dd></div></dl><small>{data.historyStatus === "available" ? "oMLX hourly history · cached tokens included in input. Partial current hour; other runtimes have no passive token history." : "Token history is unavailable. Runtime discovery never estimates tokens or requests."}</small></div>
+      <div className="local-today"><p className="eyebrow">Today · this computer</p><dl><div><dt>Local runtime tokens</dt><dd>{data.measuredTokensToday ? formatTokens(data.measuredTokensToday) : "—"}</dd></div><div><dt>oMLX requests</dt><dd>{data.requestsToday === null ? "—" : data.requestsToday.toLocaleString()}</dd></div><div><dt>Runtime observations</dt><dd>{data.observationsToday.toLocaleString()}</dd></div><div><dt>Sessions / active time</dt><dd className="unknown-value">Not reported</dd></div></dl><small>{data.historyStatus === "available" ? "oMLX hourly history · cached tokens included in input. Partial current hour; other runtimes have no passive token history." : "Token history is unavailable. Runtime discovery never estimates tokens or requests."}</small></div>
     </section>
     <section className="panel runtime-inventory"><div className="panel-heading"><div><h2>Local runtimes</h2><p>Provider-reported inventory and loaded state</p></div><button className="text-button" type="button" onClick={onSettings}>Manage endpoints <ArrowUpRight /></button></div>
       {data.runtimes.map((runtime) => <RuntimeInventory runtime={runtime} key={runtime.provider} />)}

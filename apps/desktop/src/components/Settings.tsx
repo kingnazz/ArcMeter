@@ -221,7 +221,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
       </section>
 
       <section className="settings-section">
-        <SettingsHeading title="AI sources" description="Collectors read trusted local telemetry; sensitive content stays outside ArcMeter." action={<button type="button" className="secondary-button" onClick={() => void onScan()} disabled={scanning}><RefreshCw className={scanning ? "spin" : ""} />{scanning ? "Scanning" : "Scan now"}</button>} />
+        <SettingsHeading title="AI sources" description="Tool telemetry does not establish inference location. Routing remains unknown; sensitive content stays outside ArcMeter." action={<button type="button" className="secondary-button" onClick={() => void onScan()} disabled={scanning}><RefreshCw className={scanning ? "spin" : ""} />{scanning ? "Scanning" : "Scan now"}</button>} />
         <div className="source-settings-grid">
           {data.sources.map((source) => (
             <article className="source-setting" key={source.provider}>

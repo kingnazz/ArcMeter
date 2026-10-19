@@ -328,7 +328,7 @@ fn update_tray_summary(
         return;
     };
     let _ = tray.today.set_text(format!(
-        "Today · {} measured tokens",
+        "Today · {} telemetry tokens (may overlap)",
         compact_tokens(today.metrics.measured_tokens_today)
     ));
     let _ = tray
@@ -350,11 +350,11 @@ fn update_tray_summary(
         .filter(|m| m.loaded == Some(true))
         .count();
     let _ = tray.local.set_text(format!(
-        "Local · {} measured tokens · {loaded} loaded",
-        compact_tokens(today.workload.local_tokens)
+        "Local runtime · {} tokens · {loaded} loaded",
+        compact_tokens(today.telemetry.runtime_tokens)
     ));
     let _ = tray.month.set_text(format!(
-        "This month · {} measured tokens",
+        "This month · {} telemetry tokens (may overlap)",
         compact_tokens(month.metrics.measured_tokens_month)
     ));
 }
