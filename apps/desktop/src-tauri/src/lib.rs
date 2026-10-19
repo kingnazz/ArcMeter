@@ -68,6 +68,7 @@ pub fn run() {
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             let database = Database::open(app_data.join("arcmeter.db"))?;
+            local_models::invalidate_live_state(&database)?;
             let device = database.ensure_device(app.package_info().version.to_string().as_str())?;
             database.ensure_default_subscriptions()?;
             let _ = pricing::reprice_events(&database)?;

@@ -46,6 +46,30 @@ fn endpoints_are_loopback_only_and_never_credentials_or_remote_redirects() {
 }
 
 #[test]
+fn stale_or_restarted_app_never_claims_a_live_runtime_without_redetection() {
+    let (_dir, db, device) = database();
+    let runtime = runtimes(&db).unwrap().remove(0);
+    save_detection(
+        &db,
+        &runtime,
+        Ok(providers::parse_models("omlx", &fixture("omlx"), Utc::now()).unwrap()),
+        &device,
+    )
+    .unwrap();
+    assert_eq!(runtimes(&db).unwrap()[0].status, "healthy");
+    invalidate_live_state(&db).unwrap();
+    assert_eq!(runtimes(&db).unwrap()[0].status, "stale");
+    let connection = Connection::open(db.path()).unwrap();
+    connection
+        .execute(
+            "UPDATE local_runtime_state SET status='healthy',checked_at='2000-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    assert!(runtimes(&db).unwrap().iter().all(|r| r.status == "stale"));
+}
+
+#[test]
 fn all_provider_fixtures_preserve_only_authoritative_metadata() {
     for provider in providers::PROVIDERS {
         let models = providers::parse_models(provider, &fixture(provider), Utc::now()).unwrap();

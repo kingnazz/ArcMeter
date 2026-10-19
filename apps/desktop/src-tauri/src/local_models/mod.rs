@@ -47,6 +47,14 @@ pub struct LocalModelsSnapshot {
     pub history_status: String,
 }
 
+pub fn invalidate_live_state(database: &Database) -> Result<()> {
+    Connection::open(database.path())?.execute(
+        "UPDATE local_runtime_state SET status='stale' WHERE status='healthy'",
+        [],
+    )?;
+    Ok(())
+}
+
 pub fn runtimes(database: &Database) -> Result<Vec<LocalRuntime>> {
     let connection = Connection::open(database.path())?;
     let mut statement = connection.prepare("SELECT provider, enabled, endpoint_override, status, checked_at,
@@ -60,7 +68,9 @@ pub fn runtimes(database: &Database) -> Result<Vec<LocalRuntime>> {
             && !checked_at
                 .as_ref()
                 .and_then(|v| DateTime::parse_from_rfc3339(v).ok())
-                .is_some_and(|t| Utc::now().signed_duration_since(t).num_seconds() <= 120)
+                .is_some_and(|t| {
+                    (0..=120).contains(&Utc::now().signed_duration_since(t).num_seconds())
+                })
         {
             status = "stale".into();
         }

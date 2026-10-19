@@ -122,6 +122,8 @@ Migration tests retain older usage/pricing/quota rows and advance to version 7.
 No existing table is destructively rebuilt. Adapter configuration invalidates live
 inventory immediately on endpoint changes. Failed polls clear current loaded
 state and preserve stale inventory, last successful detection and measured history.
+Readings older than two minutes are stale, and application startup requires fresh
+detection before a previously healthy runtime is shown as running.
 
 ## Privacy review
 
@@ -133,6 +135,40 @@ syntax. Diagnostics are constant messages; HTTP bodies, URLs with credentials,
 SQLite errors and log messages are never echoed. No runtime endpoint, inventory,
 raw response or request count enters the existing cloud event serializer. Fixtures
 include forbidden extra fields and assert their absence after normalization.
+
+## Validation and visual evidence
+
+The frontend suite includes 36 tests across four files, plus strict TypeScript,
+ESLint and a production Vite build. New UI tests cover true empty/unknown states,
+loaded versus stale inventory, connection tests without persistence, endpoint and
+disable saves, and local Activity filtering without fabricated foreground minutes.
+
+Native coverage includes all existing provider/session/cache/quota/sync tests and
+new fixture/loopback-server tests for three runtimes, non-default ports, empty oMLX,
+LM Studio v0 fallback, malformed/unavailable/auth-required responses, multiple
+models, unload/reload/restart/stale state, endpoint changes, 100-repeat history
+replay, growing/reset buckets, rejected paths, cache semantics, old schema upgrades
+and cloud round-trip revisions. The two existing environment-specific live-profile
+smoke tests remain ignored by default; their input requires an explicitly selected
+launched database or real Codex profile.
+
+CI runs the complete frontend gates on Ubuntu and `cargo fmt`, Clippy with warnings
+denied, the Rust suite and an unbundled native production build on Windows 2025 and
+macOS 15. Check [PR #2](https://github.com/kingnazz/ArcMeter/pull/2) for final-revision
+results. Both native test jobs passed the initial implementation checkpoint.
+Local Windows validation additionally completed an unbundled GNU debug build.
+Local test execution hit a Windows GNU loader failure before tests started
+(`STATUS_ENTRYPOINT_NOT_FOUND`); CI provides independent native execution evidence.
+No live Supabase deployment, release, installer publication or live oMLX inference
+was performed.
+
+Browser QA checked navigation, Settings, the Local Models empty state and Overview
+in light/dark themes, plus 390px and native-minimum 900px layouts. Screenshots show
+the actual browser-safe empty state; no demo telemetry was introduced:
+
+- [Local Models — dark](screenshots/local-models-dark.png)
+- [Local Models — light](screenshots/local-models-light.png)
+- [Overview with local runtime summary — dark](screenshots/overview-local-dark.png)
 
 ## Limits and next pass
 

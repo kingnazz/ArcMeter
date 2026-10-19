@@ -2,15 +2,15 @@
 
 ArcMeter is a local-first desktop application that measures AI coding-tool usage across a user's computers. It reads authoritative local telemetry from supported CLIs, normalizes token metadata into SQLite, and can synchronize that metadata through a user-owned Supabase account. Prompts, responses, source code, commands, uploaded files, secrets, environment variables, and absolute paths are outside the sync boundary.
 
-V1 supports native token collectors for OpenAI Codex, Claude Code CLI, Grok Build, and Gemini CLI. Claude Code CLI telemetry does not include the Claude Desktop app. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product UI contains only Overview, Activity, Insights, and Settings.
-
-## Stack
+ArcMeter supports native token collectors for OpenAI Codex, Claude Code CLI, Grok Build, and Gemini CLI. Claude Code CLI telemetry does not include the Claude Desktop app. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product views are Overview, Activity, Sessions, Local Models, Insights, and Settings.
 
 Local Models adds passive oMLX, Ollama and LM Studio discovery, loaded-model status,
 configurable loopback endpoints and runtime observations. oMLX's dedicated hourly
 usage database can also supply authoritative token/request counts. Unsupported
 usage remains unavailable; loaded state never implies token usage. See
 [Local Models coverage, privacy and limitations](docs/LOCAL_MODELS.md).
+
+## Stack
 
 - Tauri `2.11.5` with Tauri CLI `2.11.4`
 - Rust `1.98.0` (the crate declares an MSRV of `1.88`)
