@@ -46,17 +46,7 @@ pub fn endpoint(value: &str) -> Result<Url, &'static str> {
 
 // Only identifier metadata is accepted. In particular, never retain model paths.
 pub fn identifier(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()
-        && value.len() <= 160
-        && !value.starts_with(['/', '.', '~'])
-        && !value.contains('\\')
-        && !value.contains(":/")
-        && !value.split('/').any(|part| part == "..")
-        && value
-            .chars()
-            .all(|c| c.is_alphanumeric() || "-_. /+@:".contains(c)))
-    .then(|| value.to_owned())
+    crate::domain::safe_identifier(value)
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {

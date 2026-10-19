@@ -168,6 +168,54 @@ fn ollama_running_inventory_multiple_models_and_unload_reload() {
 }
 
 #[test]
+fn long_model_ids_remain_exact_and_repair_legacy_truncation_without_new_buckets() {
+    let (dir, db, device) = database();
+    let path = dir.path().join("usage.sqlite3");
+    let source = Connection::open(&path).unwrap();
+    source.execute_batch("PRAGMA user_version=1; CREATE TABLE model_usage_hourly(timestamp_hour INTEGER,model_id TEXT,
+        requests INTEGER,prompt_tokens INTEGER,completion_tokens INTEGER,cached_tokens INTEGER);").unwrap();
+    let model = format!("org/{}", "m".repeat(156));
+    let hour = Utc::now().timestamp() / 3600 * 3600;
+    source
+        .execute(
+            "INSERT INTO model_usage_hourly VALUES(?1,?2,1,100,20,30)",
+            params![hour, model],
+        )
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    let target = Connection::open(db.path()).unwrap();
+    target
+        .execute(
+            "UPDATE usage_events SET model=substr(model,1,128),sync_status='synced'",
+            [],
+        )
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    let stored: (String, i64, String) = target
+        .query_row(
+            "SELECT model,total_tokens,sync_status FROM usage_events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (model, 120, "pending".into()));
+    target
+        .execute("UPDATE usage_events SET sync_status='synced'", [])
+        .unwrap();
+    omlx::collect_path(&db, &device, &path).unwrap();
+    assert_eq!(
+        target
+            .query_row(
+                "SELECT COUNT(*) FROM usage_events WHERE sync_status='synced'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn omlx_retained_history_replay_sanity() {
     let (dir, db, device) = database();
     let path = dir.path().join("usage.sqlite3");

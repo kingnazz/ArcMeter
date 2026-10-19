@@ -66,7 +66,7 @@ pub fn collect_path(database: &Database, device: &str, path: &Path) -> Result<()
             u.output_tokens,u.cached_input_tokens,d.requests FROM usage_events u
             LEFT JOIN local_usage_details d ON d.event_id=u.id
             WHERE u.provider='omlx' AND u.source=?1 AND u.device_id=?2 AND u.measurement_kind='measured'
-              AND u.superseded_by_event_id IS NULL")?;
+              AND u.superseded_by_event_id IS NULL AND u.model IS NOT NULL")?;
         let rows = statement.query_map(params![SOURCE, device], |r| {
             Ok((
                 (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
@@ -147,11 +147,12 @@ pub fn collect_path(database: &Database, device: &str, path: &Path) -> Result<()
         transaction.execute("INSERT INTO usage_events(id,provider,source,source_type,native_session_id,native_event_id,
             occurred_at,model,input_tokens,output_tokens,cached_input_tokens,total_tokens,measurement_kind,device_id,created_at,updated_at)
             VALUES(?1,'omlx',?2,'api',?3,?4,?5,?6,?7,?8,?9,?10,'measured',?11,?12,?12)
-            ON CONFLICT(id) DO UPDATE SET input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
+            ON CONFLICT(id) DO UPDATE SET model=excluded.model,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
             cached_input_tokens=excluded.cached_input_tokens,total_tokens=excluded.total_tokens,updated_at=excluded.updated_at,sync_status='pending'
             WHERE excluded.input_tokens>=usage_events.input_tokens AND excluded.output_tokens>=usage_events.output_tokens
               AND excluded.cached_input_tokens>=usage_events.cached_input_tokens
-              AND (excluded.total_tokens>usage_events.total_tokens OR excluded.cached_input_tokens>usage_events.cached_input_tokens)",
+              AND (excluded.total_tokens>usage_events.total_tokens OR excluded.cached_input_tokens>usage_events.cached_input_tokens
+                OR usage_events.model IS NOT excluded.model)",
             params![event.id, SOURCE, event.native_session_id, event.native_event_id, time.to_rfc3339(), event.model,
                 input, output, cached, total, device, now.to_rfc3339()])?;
         transaction.execute(

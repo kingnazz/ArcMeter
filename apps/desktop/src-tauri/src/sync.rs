@@ -287,7 +287,7 @@ fn pending_events(database: &Database, limit: i64) -> Result<Vec<Value>, SyncErr
             "provider": row.get::<_, String>(2)?, "source": row.get::<_, String>(3)?,
             "source_type": row.get::<_, String>(4)?, "native_session_id": row.get::<_, String>(5)?,
             "native_event_id": row.get::<_, String>(6)?, "occurred_at": row.get::<_, String>(7)?,
-            "model": row.get::<_, Option<String>>(8)?, "project_name": row.get::<_, Option<String>>(9)?,
+            "model": row.get::<_, Option<String>>(8)?.as_deref().and_then(crate::domain::safe_identifier), "project_name": row.get::<_, Option<String>>(9)?,
             "input_tokens": row.get::<_, i64>(10)?, "cached_input_tokens": row.get::<_, i64>(11)?,
             "cache_write_tokens": row.get::<_, i64>(12)?,
             "cache_write_5m_tokens": row.get::<_, i64>(13)?,
@@ -391,7 +391,7 @@ fn apply_remote_events(database: &Database, rows: &[Value]) -> Result<usize, Syn
                updated_at=excluded.updated_at, sync_status='synced'
              WHERE excluded.updated_at > usage_events.updated_at",
             params![id, string(row,"provider"), string(row,"source"), string(row,"source_type"), string(row,"native_session_id"),
-              string(row,"native_event_id"), string(row,"occurred_at"), row.get("model").and_then(Value::as_str),
+              string(row,"native_event_id"), string(row,"occurred_at"), row.get("model").and_then(Value::as_str).and_then(crate::domain::safe_identifier),
               row.get("project_name").and_then(Value::as_str), integer(row,"input_tokens"), integer(row,"cached_input_tokens"),
               integer(row,"cache_write_tokens"), integer(row,"output_tokens"),
               integer(row,"cache_write_5m_tokens"), integer(row,"cache_write_1h_tokens"),
@@ -509,6 +509,54 @@ impl RetryPolicy {
 mod tests {
     use super::*;
     use crate::domain::{TokenCounts, UsageEvent};
+
+    #[test]
+    fn path_shaped_model_metadata_never_crosses_sync_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("model-privacy.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let event = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "session",
+            "turn",
+            Utc::now(),
+            Some("org/Qwen:4b".into()),
+            None,
+            TokenCounts {
+                input_tokens: 100,
+                output_tokens: 20,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            &device.id,
+        );
+        database.insert_usage_events(&[event]).unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        // Simulate a row produced by a legacy client; never upload its model path.
+        connection
+            .execute(
+                "UPDATE usage_events SET model='/Users/never-store/Qwen'",
+                [],
+            )
+            .unwrap();
+        let mut payload = pending_events(&database, 10).unwrap().remove(0);
+        assert!(payload["model"].is_null());
+        assert!(!payload.to_string().contains("never-store"));
+        // Incoming legacy metadata retains measured counters with model unavailable.
+        payload["id"] = json!("a".repeat(64));
+        payload["native_event_id"] = json!("remote-turn");
+        payload["model"] = json!(r"C:\Users\never-store\Qwen");
+        assert_eq!(apply_remote_events(&database, &[payload]).unwrap(), 1);
+        let stored: (Option<String>, i64) = connection
+            .query_row(
+                "SELECT model,total_tokens FROM usage_events WHERE id=?1",
+                ["a".repeat(64)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, (None, 120));
+    }
 
     #[test]
     fn retry_is_exponential_and_capped() {

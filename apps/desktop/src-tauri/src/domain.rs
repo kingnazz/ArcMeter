@@ -163,7 +163,7 @@ impl UsageEvent {
             native_session_id,
             native_event_id,
             occurred_at,
-            model: clean_label(model),
+            model: model.as_deref().and_then(safe_identifier),
             project_name: clean_label(project_name).and_then(|value| sanitize_project_name(&value)),
             tokens: tokens.normalize(),
             estimated_api_value_usd_micros: None,
@@ -241,6 +241,22 @@ pub fn sanitize_project_name(raw: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+/// Metadata identifiers may include model namespaces/tags, never paths or URLs.
+/// Preserve accepted IDs exactly so event identity and replay state agree.
+pub(crate) fn safe_identifier(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 160
+        && !value.starts_with(['/', '.', '~'])
+        && !value.contains('\\')
+        && !value.contains(":/")
+        && !value.split('/').any(|part| part == "..")
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_. /+@:".contains(c)))
+    .then(|| value.to_owned())
+}
+
 fn clean_label(value: Option<String>) -> Option<String> {
     value.and_then(|item| {
         let clean: String = item
@@ -282,6 +298,48 @@ pub struct CollectorOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_metadata_rejects_paths_and_preserves_full_safe_identifiers() {
+        for raw in [
+            "/Users/private/Qwen",
+            r"C:\Users\private\Qwen",
+            " ~/models/Qwen ",
+            " ../Qwen ",
+            "org/../private",
+            "https://example.com/model",
+        ] {
+            let event = UsageEvent::measured(
+                "codex",
+                "codex_cli",
+                "session",
+                "turn",
+                Utc::now(),
+                Some(raw.into()),
+                None,
+                TokenCounts::default(),
+                "device",
+            );
+            assert_eq!(event.model, None);
+        }
+        for id in [
+            "org/Qwen-4bit:latest".to_owned(),
+            format!("org/{}", "m".repeat(156)),
+        ] {
+            let event = UsageEvent::measured(
+                "codex",
+                "codex_cli",
+                "session",
+                "turn",
+                Utc::now(),
+                Some(id.clone()),
+                None,
+                TokenCounts::default(),
+                "device",
+            );
+            assert_eq!(event.model.as_deref(), Some(id.as_str()));
+        }
+    }
 
     #[test]
     fn deterministic_id_is_stable_and_scoped() {

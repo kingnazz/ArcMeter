@@ -46,7 +46,7 @@ Access details for the actual oMLX installation have been requested in the chat.
 | Model unload/reload and UI updates/responsiveness under live inference | Pending live host; transitions covered with loopback/fixture tests |
 | Native app restart stale until redetection | Covered by native state tests; live host acceptance pending |
 | Native tray appearance | Wording/code and native build checked; visual native tray acceptance pending |
-| Privacy | Allowlisted metadata normalization, forbidden-field fixtures and sync serialization tests pass; live-host persistence audit pending |
+| Privacy | Allowlisted metadata normalization, forbidden-field fixtures and bidirectional sync guards pass; live-host persistence audit pending |
 
 The live pass must run on the actual oMLX host, or through an already authorized
 loopback connection with its selected metadata database available. A remote URL
@@ -64,8 +64,8 @@ buckets. These are performance fixtures, not the user's oMLX history.
 
 | Measurement | Before | After |
 | --- | --- | --- |
-| Initial import | 7,440 ms | 7,714 ms |
-| Three unchanged replays | 6,188 / 6,432 / 6,566 ms | 392 / 468 / 483 ms |
+| Initial import | 7,440 ms | 7,952 ms |
+| Three unchanged replays | 6,188 / 6,432 / 6,566 ms | 397 / 476 / 475 ms |
 
 The collector now loads durable per-bucket high-water counters from its existing
 canonical ledger, skips unchanged event-ID hashing/writes, and handles request-only growth
@@ -78,7 +78,7 @@ the initial import remains on the background blocking worker. SQLite uses WAL.
 ## Regression coverage and local validation
 
 - Frontend: 41 tests, TypeScript, ESLint and production build passed.
-- Native: 127 passed, two existing environment-specific tests ignored; formatting,
+- Native: 130 passed, two existing environment-specific tests ignored; formatting,
   Clippy with warnings denied, and unbundled Windows GNU debug build passed.
 - New accuracy regressions cover all four tools as tool telemetry, undocumented
   sources as unclassified, separate Codex/oMLX rows with identical model/time,
@@ -87,6 +87,12 @@ the initial import remains on the background blocking worker. SQLite uses WAL.
 - Collector tests cover 38,400-bucket replay without sync requeue, request-only
   growth, missing local-detail repair, late historical growth, current-hour
   growth, resets, 100 repeated scans and existing privacy/cache/sync behavior.
+- Model identifiers now share the runtime metadata whitelist at tool ingestion
+  and both sync boundaries. Paths/URLs become unavailable model metadata without
+  losing measured counters. Accepted IDs retain all 160 allowed bytes; hourly
+  replay repairs the earlier 128-character truncation in place without creating
+  another bucket. Regressions cover path rejection, legacy sync metadata and
+  long-ID repair/replay. Existing local rows are not destructively rewritten.
 - The local GNU test loader issue was resolved by embedding a common-controls v6
   manifest into local test executables. This does not change repository sources.
 
