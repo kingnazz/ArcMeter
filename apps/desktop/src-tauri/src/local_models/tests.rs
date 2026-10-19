@@ -94,6 +94,9 @@ fn all_provider_fixtures_preserve_only_authoritative_metadata() {
         .is_err()
     );
     assert!(providers::identifier("C:\\Users\\secret").is_none());
+    assert!(providers::identifier("  /Users/private/model  ").is_none());
+    assert!(providers::identifier(" C:/Users/private/model ").is_none());
+    assert_eq!(providers::identifier("q:4b").as_deref(), Some("q:4b"));
 }
 
 #[test]
