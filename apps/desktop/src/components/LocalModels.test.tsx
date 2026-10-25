@@ -16,6 +16,25 @@ function local(runtimes: LocalRuntime[] = [runtime()]): LocalModelsSnapshot {
   return {runtimes,measuredTokensToday:0,requestsToday:null,observationsToday:0,historyStatus:"not_found"};
 }
 describe("Local Models trust boundary", () => {
+  it("prevents testing or saving an invalid manual endpoint", () => {
+    render(<LocalModelSettings data={local()} onRefresh={vi.fn(() => Promise.resolve())} />);
+    fireEvent.click(screen.getByLabelText("oMLX automatic discovery"));
+    fireEvent.change(screen.getByLabelText("oMLX endpoint"), {target:{value:"http://remote.example.com:8000"}});
+    expect(screen.getByLabelText("oMLX endpoint")).toHaveAttribute("aria-invalid","true");
+    expect(screen.getByRole("alert")).toHaveTextContent("HTTP loopback");
+    expect(screen.getByRole("button",{name:"Test connection"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"Save"})).toBeDisabled();
+    expect(testLocalRuntime).not.toHaveBeenCalled();
+    expect(configureLocalRuntime).not.toHaveBeenCalled();
+  });
+  it("distinguishes an authoritative zero from unavailable token history", () => {
+    const data = {...local(),historyStatus:"available",requestsToday:0};
+    const view = render(<LocalModels data={data} scanning={false} onScan={vi.fn()} onSettings={vi.fn()} />);
+    const tokens = screen.getByText("Local runtime tokens").nextElementSibling;
+    expect(tokens).toHaveTextContent("0");
+    view.rerender(<LocalModels data={{...data,historyStatus:"not_found",requestsToday:null}} scanning={false} onScan={vi.fn()} onSettings={vi.fn()} />);
+    expect(tokens).toHaveTextContent("—");
+  });
   it("uses a real empty state with unknown request, session and token measurements", () => {
     render(<LocalModels data={local()} scanning={false} onScan={vi.fn()} onSettings={vi.fn()} />);
     expect(screen.getByText("No loaded model detected")).toBeInTheDocument();

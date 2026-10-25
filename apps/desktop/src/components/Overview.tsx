@@ -1,8 +1,11 @@
 import { useState } from "react";
-import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw } from "lucide-react";
-import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult, TrendPoint } from "../types";
-import { activitySourceLabel, formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdCents, formatUsdMicros } from "../lib/format";
+import { ArrowUpRight, Calculator, CircleDollarSign, DatabaseZap, RefreshCw, TriangleAlert } from "lucide-react";
+import type { BreakdownItem, DashboardSnapshot, ProviderQuotaState, SourceScanResult } from "../types";
+import { activitySourceLabel, formatMinorCurrency, formatMinutes, formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatRelativeTime, formatTokens, formatUsdMicros } from "../lib/format";
 import { ProviderMark } from "./ProviderMark";
+import { UsageChart } from "./UsageChart";
+import { SectionHeader as PanelHeader } from "./Primitives";
+export { UsageChart } from "./UsageChart";
 import { LocalOverview } from "./LocalModels";
 
 interface OverviewProps {
@@ -15,9 +18,10 @@ interface OverviewProps {
 }
 export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, onActivity }: OverviewProps) {
   const enabledQuotas = quotas.filter((quota): quota is ProviderQuotaState => Boolean(quota?.enabled));
+  const quotaAttention = <QuotaAttention quotas={enabledQuotas} />;
   const [scenarioMultiplier, setScenarioMultiplier] = useState(2);
   if (data.metrics.measuredEventsRange === 0 && data.metrics.measuredTokensMonth === 0 && data.metrics.activityMinutesRange === 0) {
-    return <div className="page-stack overview-page"><LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} /><RecentActivity items={data.activity} onOpen={onActivity} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
+    return <div className="page-stack overview-page">{quotaAttention}<LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} /><RecentActivity items={data.activity} onOpen={onActivity} />{enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}<Onboarding sources={data.sources} scanning={scanning} onScan={onScan} /></div>;
   }
 
   const metrics = data.metrics;
@@ -39,8 +43,7 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
       : "No measured events have safe model pricing";
   return (
     <div className="page-stack overview-page">
-      <LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} />
-      {enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}
+      {quotaAttention}
       <section className="hero-metrics" aria-label="Headline usage metrics">
         <div className="hero-primary">
           <p className="eyebrow">Telemetry tokens · selected period</p>
@@ -51,9 +54,22 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
         <Metric label="Today" value={formatTokens(metrics.measuredTokensToday)} suffix="telemetry tokens" />
         <Metric label="This month" value={formatTokens(metrics.measuredTokensMonth)} suffix="telemetry tokens" />
         <Metric label="Active time" value={formatMinutes(metrics.activityMinutesRange)} suffix="activity-only" />
-        <Metric label="Subscriptions" value={formatUsdCents(metrics.monthlySubscriptionUsdCents)} suffix="monthly" />
+        <Metric label="Source records" value={metrics.measuredEventsRange.toLocaleString()} suffix="not unique requests" />
       </section>
 
+      <div className="overview-grid">
+        <section className="panel trend-panel">
+          <PanelHeader title="Telemetry trend" detail="Source token counts · may overlap" />
+          <UsageChart points={data.trend} />
+        </section>
+        <section className="panel provider-panel">
+          <PanelHeader title="By telemetry source" detail="Share of recorded tokens · may overlap" />
+          <BreakdownList items={data.byProvider} providerMarks />
+        </section>
+      </div>
+
+      <LocalOverview local={data.localModels} telemetry={data.telemetry} onOpen={onLocalModels} />
+      {enabledQuotas.map((quota) => <LiveLimits key={quota.provider} quota={quota} />)}
       <section className="value-strip">
         <div className="value-icon"><CircleDollarSign /></div>
         <div>
@@ -69,7 +85,7 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
         </div>
       </section>
 
-      <section className="panel value-calculator" aria-labelledby="value-calculator-title">
+      <details className="price-scenario"><summary><Calculator />Price scenario <span>Explore a hypothetical API markup</span><ArrowUpRight /></summary><section className="panel value-calculator" aria-labelledby="value-calculator-title">
         <div className="calculator-heading">
           <div className="calculator-icon"><Calculator /></div>
           <div>
@@ -100,34 +116,32 @@ export function Overview({ data, quotas = [], scanning, onScan, onLocalModels, o
         <p className="calculator-note">Public API list price is the closest verifiable MSRP. Providers do not publish a definitive “unsubsidized” consumer price, so values above 1× are scenarios—not claims about provider costs.</p>
       </section>
 
+      </details>
       <RecentActivity items={data.activity} onOpen={onActivity} />
-      <div className="overview-grid">
-        <section className="panel trend-panel">
-          <PanelHeader title="Telemetry trend" subtitle="Source token counts · may overlap" />
-          <UsageChart points={data.trend} />
-        </section>
-        <section className="panel provider-panel">
-          <PanelHeader title="By telemetry source" subtitle="Share of recorded tokens · may overlap" />
-          <BreakdownList items={data.byProvider} providerMarks />
-        </section>
-      </div>
-
       <div className="overview-grid overview-grid-bottom">
         <section className="panel">
-          <PanelHeader title="Top models" subtitle="Recorded tokens · may overlap" />
+          <PanelHeader title="Top models" detail="Recorded tokens · may overlap" />
           <BreakdownList items={data.byModel.slice(0, 5)} />
         </section>
         <section className="panel">
-          <PanelHeader title="Projects" subtitle="Sanitized local basenames" />
+          <PanelHeader title="Projects" detail="Sanitized local basenames" />
           <BreakdownList items={data.byProject.slice(0, 5)} />
         </section>
         <section className="panel">
-          <PanelHeader title="Devices" subtitle="Combined local ledger" />
+          <PanelHeader title="Devices" detail="Combined local ledger" />
           <BreakdownList items={data.byDevice.slice(0, 5)} />
         </section>
       </div>
     </div>
   );
+}
+
+function QuotaAttention({ quotas }: { quotas: ProviderQuotaState[] }) {
+  const risks = quotas.flatMap((quota) => quota.stale || quota.status !== "healthy" ? [] : quota.analyses
+    .filter((analysis) => !analysis.stale && analysis.capBearing && (analysis.status === "limit_reached" || (analysis.status === "active" && analysis.projectedBeforeReset === true)))
+    .map((analysis) => ({provider:quota.provider, analysis})));
+  if (!risks.length) return null;
+  return <div className="quota-attention" role="status" aria-label="Quota attention">{risks.map(({provider,analysis}) => <div key={`${provider}:${analysis.windowKey}`}><TriangleAlert /><div><strong>{provider === "claude" ? "Claude" : "Grok"} · {analysis.label} {analysis.status === "limit_reached" ? "limit reached" : "may reach its limit before reset"}</strong><span>{analysis.status === "limit_reached" ? formatQuotaReset(analysis.resetsAt) : analysis.recentBurnBpsPerHour === null ? "Based on provider quota history" : `At current pace · ${formatQuotaPace(analysis.recentBurnBpsPerHour)}`}</span></div><a href={`#${provider}-live-limits-title`}>Review limits <ArrowUpRight /></a></div>)}</div>;
 }
 
 function RecentActivity({ items, onOpen }: { items: DashboardSnapshot["activity"]; onOpen?: () => void }) {
@@ -225,63 +239,6 @@ function Metric({ label, value, suffix }: { label: string; value: string; suffix
       <span>{label}</span>
       <strong>{value}</strong>
       <small>{suffix}</small>
-    </div>
-  );
-}
-
-function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
-  return (
-    <div className="panel-heading">
-      <div>
-        <h2>{title}</h2>
-        <p>{subtitle}</p>
-      </div>
-    </div>
-  );
-}
-
-export function UsageChart({ points }: { points: TrendPoint[] }) {
-  if (points.length === 0) {
-    return <div className="chart-empty">Usage will appear here after the next measured event.</div>;
-  }
-  const width = 760;
-  const height = 250;
-  const padX = 16;
-  const padTop = 18;
-  const padBottom = 35;
-  const max = Math.max(...points.map((point) => point.tokens), 1);
-  const usableWidth = width - padX * 2;
-  const usableHeight = height - padTop - padBottom;
-  const coords = points.map((point, index) => ({
-    x: padX + (index / Math.max(points.length - 1, 1)) * usableWidth,
-    y: padTop + usableHeight - (point.tokens / max) * usableHeight,
-  }));
-  const line = coords.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
-  const area = `${line} L${coords.at(-1)?.x ?? padX},${height - padBottom} L${padX},${height - padBottom} Z`;
-  const labels = points.length > 7 ? points.filter((_, index) => index % Math.ceil(points.length / 6) === 0 || index === points.length - 1) : points;
-
-  return (
-    <div className="chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Measured token usage trend">
-        <defs>
-          <linearGradient id="usage-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
-            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {[0.25, 0.5, 0.75, 1].map((lineValue) => (
-          <line key={lineValue} className="chart-grid-line" x1={padX} x2={width - padX} y1={padTop + usableHeight * lineValue} y2={padTop + usableHeight * lineValue} />
-        ))}
-        <path className="chart-area" d={area} />
-        <path className="chart-line" d={line} />
-        {coords.map((point, index) => <circle key={points[index]?.date} className="chart-point" cx={point.x} cy={point.y} r="3" />)}
-        {labels.map((point) => {
-          const index = points.indexOf(point);
-          const x = coords[index]?.x ?? padX;
-          return <text key={point.date} className="chart-label" x={x} y={height - 8} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}>{point.label}</text>;
-        })}
-      </svg>
-      <div className="chart-peak">Peak <strong>{formatTokens(max)}</strong></div>
     </div>
   );
 }

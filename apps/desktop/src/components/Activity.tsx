@@ -2,6 +2,7 @@ import { ChevronDown, Filter, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ActivityItem } from "../types";
 import { activitySourceLabel, formatActivityDate, formatActivityTime, formatTokenDetail, formatTokens, formatUsdMicros, formatUsdTicks, telemetryLayer, providerLabel } from "../lib/format";
+import { EmptyState } from "./Primitives";
 import { ProviderMark } from "./ProviderMark";
 
 interface ActivityProps {
@@ -44,7 +45,7 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
 
   return (
     <div className="page-stack activity-page">
-      <section className="filter-bar">
+      <section className="filter-bar" aria-label="Activity filters">
         <div className="search-field"><Search /><input aria-label="Search activity" placeholder="Search activity" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
         <FilterSelect label="Provider" value={provider} onChange={setProvider} options={options.providers.map((value) => ({ value, label: providerLabel(value) }))} />
         <FilterSelect label="Telemetry layer" value={layer} onChange={setLayer} options={[{ value: "runtime", label: "Local runtime telemetry" }, { value: "tool", label: "Tool telemetry · routing unknown" }, { value: "unknown", label: "Unclassified telemetry" }]} />
@@ -60,7 +61,7 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
       </div>
 
       {groups.length === 0 ? (
-        <div className="substantial-empty"><Filter /><h2>No activity matches</h2><p>Adjust your filters or scan local sources again.</p></div>
+        <EmptyState icon={<Filter />} title={hasFilters ? "No activity matches" : "Your event ledger is ready"} detail={hasFilters ? "Try a broader filter or clear your search." : "Measured usage and runtime observations will appear after collection."} action={hasFilters ? <button className="secondary-button" type="button" onClick={() => { setProvider("all"); setLayer("all"); setDevice("all"); setProject("all"); setModel("all"); setQuery(""); }}>Clear filters</button> : undefined} />
       ) : (
         <>
           <div className="timeline">
@@ -71,9 +72,9 @@ export function Activity({ items, hasMore = false, loadingMore = false, onLoadMo
                   {rows.map((item) => (
                     <div className={`activity-row ${expanded === item.id ? "expanded" : ""}`} key={item.id}>
                       <button type="button" className="activity-main" onClick={() => setExpanded(expanded === item.id ? null : item.id)} aria-expanded={expanded === item.id}>
-                        <time>{formatActivityTime(item.occurredAt)}</time>
+                        <time dateTime={item.occurredAt} title={new Date(item.occurredAt).toLocaleString()}>{formatActivityTime(item.occurredAt)}</time>
                         <ProviderMark provider={item.provider} />
-                        <div className="activity-identity"><strong>{activitySourceLabel(item.source, item.provider)}</strong><span><b className="local-badge">{telemetryLayer(item) === "runtime" ? "Local runtime" : telemetryLayer(item) === "tool" ? "Tool · route unknown" : "Route unknown"}</b>{item.measurementKind === "runtime_status" ? "Runtime observation" : item.measurementKind === "activity_only" ? "Foreground activity" : item.source === "omlx_usage_hourly" ? "Hour beginning at shown time" : item.projectName ?? "Unknown project"}</span></div>
+                        <div className="activity-identity"><strong>{activitySourceLabel(item.source, item.provider)}</strong><span><b className={`telemetry-badge layer-${telemetryLayer(item)}`}>{telemetryLayer(item) === "runtime" ? "Local runtime" : telemetryLayer(item) === "tool" ? "Tool · route unknown" : "Route unknown"}</b>{item.measurementKind === "runtime_status" ? "Runtime observation" : item.measurementKind === "activity_only" ? "Foreground activity" : item.source === "omlx_usage_hourly" ? "Hour beginning at shown time" : item.projectName ?? "Unknown project"}</span></div>
                         <div className="activity-model"><span>{item.measurementKind === "activity_only" ? "Token telemetry unavailable" : item.model ?? (item.measurementKind === "runtime_status" ? "Runtime status change" : "Model unavailable")}</span><small>{item.deviceName}</small></div>
                         <div className="activity-tokens"><strong>{item.measurementKind === "runtime_status" ? "—" : item.measurementKind === "activity_only" ? "1 min" : formatTokens(item.totalTokens)}</strong><span>{item.measurementKind === "runtime_status" ? "state change" : item.source === "omlx_usage_hourly" ? "measured / hour" : item.measurementKind.replace("_", " ")}</span></div>
                         <ChevronDown className="activity-chevron" />

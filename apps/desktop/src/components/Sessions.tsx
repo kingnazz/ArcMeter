@@ -32,6 +32,7 @@ export function Sessions({ initialPage, loadPage = getSessionPage, loadDetail = 
   const [detailLoading, setDetailLoading] = useState(false);
   const [eventsLoading, setEventsLoading] = useState(false);
   const preserveInitial = useRef(Boolean(initialPage));
+  const returnFocus = useRef<HTMLElement | null>(null);
   const selectionKey = useRef<string | null>(null);
 
   const providers = useMemo(
@@ -78,6 +79,7 @@ export function Sessions({ initialPage, loadPage = getSessionPage, loadDetail = 
   }
 
   async function selectSession(session: SessionSummary) {
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     selectionKey.current = session.sessionKey;
     setSelected(session);
     setDetail(null);
@@ -117,6 +119,7 @@ export function Sessions({ initialPage, loadPage = getSessionPage, loadDetail = 
   }
 
   const groups = groupSessions(page.sessions);
+  const maxSessionTokens = Math.max(...page.sessions.map((row) => row.totalTokens), 1);
   return (
     <div className="page-stack session-page">
       <section className="filter-bar" aria-label="Session filters">
@@ -130,7 +133,7 @@ export function Sessions({ initialPage, loadPage = getSessionPage, loadDetail = 
       <section className="session-summary-strip" aria-label="Session totals">
         <div><span>Sessions</span><strong>{page.stats.sessionCount.toLocaleString()}</strong></div>
         <div><span>Measured tokens</span><strong>{formatTokens(page.stats.totalTokens)}</strong></div>
-        <div><span>API-equivalent value</span><strong>{formatUsdMicrosPrecise(page.stats.estimatedApiValueUsdMicros)}</strong></div>
+        <div><span>API-equivalent value</span><strong className={page.stats.estimatedApiValueUsdMicros === null ? "metric-unavailable" : undefined}>{formatUsdMicrosPrecise(page.stats.estimatedApiValueUsdMicros)}</strong></div>
         <p>Only canonical measured events are grouped. Activity-only and estimated records are excluded.</p>
       </section>
 
@@ -146,20 +149,20 @@ export function Sessions({ initialPage, loadPage = getSessionPage, loadDetail = 
               <section className="session-group" key={label}>
                 <div className="session-group-heading"><h2>{label}</h2><span>{sessions.length} session{sessions.length === 1 ? "" : "s"}</span></div>
                 <div className="session-list">
-                  {sessions.map((session) => <SessionRow key={session.sessionKey} session={session} selected={selected?.sessionKey === session.sessionKey} onSelect={() => void selectSession(session)} />)}
+                  {sessions.map((session) => <SessionRow key={session.sessionKey} session={session} maxTokens={maxSessionTokens} selected={selected?.sessionKey === session.sessionKey} onSelect={() => void selectSession(session)} />)}
                 </div>
               </section>
             ))}
             {page.hasMore ? <div className="session-load-more"><button type="button" className="secondary-button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading sessions…" : "Load more sessions"}</button></div> : null}
           </div>
-          {selected ? <SessionDetailPanel session={selected} detail={detail} loading={detailLoading} loadingMoreEvents={eventsLoading} onClose={() => { selectionKey.current = null; setSelected(null); setDetail(null); }} onLoadMoreEvents={() => void loadMoreEvents()} /> : null}
+          {selected ? <SessionDetailPanel session={selected} detail={detail} loading={detailLoading} loadingMoreEvents={eventsLoading} onClose={() => { selectionKey.current = null; setSelected(null); setDetail(null); returnFocus.current?.focus(); }} onLoadMoreEvents={() => void loadMoreEvents()} /> : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-function SessionRow({ session, selected, onSelect }: { session: SessionSummary; selected: boolean; onSelect: () => void }) {
+function SessionRow({ session, maxTokens, selected, onSelect }: { session: SessionSummary; maxTokens: number; selected: boolean; onSelect: () => void }) {
   const deviceLabel = session.deviceCount > 1 ? `${session.deviceCount} devices` : session.primaryDeviceName;
   return (
     <button type="button" className={selected ? "session-row selected" : "session-row"} onClick={onSelect} aria-pressed={selected}>
@@ -167,20 +170,24 @@ function SessionRow({ session, selected, onSelect }: { session: SessionSummary; 
       <div className="session-row-main">
         <strong>{session.projectName}</strong>
         <span>{sourceLabel(session.source, session.provider)} · {session.primaryModel}{session.modelCount > 1 ? ` +${session.modelCount - 1}` : ""}</span>
+        <small className="session-inline-meta">{formatSessionDuration(session.durationSeconds)} · {formatActivityTime(session.startedAt)}–{formatActivityTime(session.lastActivityAt)}</small>
       </div>
       <div className="session-row-meta"><span>{formatActivityDate(session.lastActivityAt)} · {formatActivityTime(session.startedAt)}–{formatActivityTime(session.lastActivityAt)}</span><small>{formatSessionDuration(session.durationSeconds)} · {deviceLabel}</small></div>
-      <div className="session-row-metrics"><strong>{formatTokens(session.totalTokens)}</strong><span>{valueLabel(session)}</span></div>
+      <div className="session-row-volume" aria-label={session.totalTokens.toLocaleString()+" tokens relative to the largest loaded session"}><span style={{width:`${session.totalTokens / maxTokens * 100}%`}} /></div>
+      <div className="session-row-metrics"><strong>{formatTokens(session.totalTokens)}</strong><span>{session.eventCount.toLocaleString()} events · {formatTokens(session.cachedInputTokens)} cached</span><small>{valueLabel(session)}</small></div>
     </button>
   );
 }
 
 function SessionDetailPanel({ session, detail, loading, loadingMoreEvents, onClose, onLoadMoreEvents }: { session: SessionSummary; detail: SessionDetail | null; loading: boolean; loadingMoreEvents: boolean; onClose: () => void; onLoadMoreEvents: () => void }) {
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { closeButton.current?.focus(); }, [session.sessionKey]);
   const shown = detail?.session ?? session;
   return (
-    <aside className="session-detail" aria-label="Session detail">
+    <aside className="session-detail" aria-label="Session detail" onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
       <header className="session-detail-header">
         <div><p className="eyebrow">Measured session</p><h2>{shown.projectName}</h2><span>{sourceLabel(shown.source, shown.provider)} · {formatActivityDate(shown.lastActivityAt)}</span></div>
-        <button className="icon-button" type="button" onClick={onClose} aria-label="Close session detail"><X /></button>
+        <button ref={closeButton} className="icon-button" type="button" onClick={onClose} aria-label="Close session detail"><X /></button>
       </header>
       {loading ? <div className="session-detail-loading">Loading session detail…</div> : detail ? <>
         <div className="session-detail-overview"><div><span>Duration</span><strong>{formatSessionDuration(shown.durationSeconds)}</strong></div><div><span>Events</span><strong>{shown.eventCount.toLocaleString()}</strong></div><div><span>Devices</span><strong>{shown.deviceCount.toLocaleString()}</strong></div></div>
@@ -196,7 +203,7 @@ function SessionDetailPanel({ session, detail, loading, loadingMoreEvents, onClo
 }
 
 function SessionSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[] }) {
-  return <label className="select-wrap"><span className="sr-only">{label}</span><select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}><option value="all">{label}</option>{options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select><ChevronDown /></label>;
+  return <label className="select-wrap"><span className="sr-only">{label}</span><select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>{label === "Provider" ? <option value="all">All providers</option> : null}{options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select><ChevronDown /></label>;
 }
 
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {

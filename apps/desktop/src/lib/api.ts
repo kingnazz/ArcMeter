@@ -1,3 +1,4 @@
+import { errorPreview, loadingPreview, samplePreview } from "./preview";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ActivityTrackingStatus, AuthStatus, CacheEfficiencyReport, CacheRange, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, SessionDetail, SessionPage, SessionQuery, Subscription, SyncReport } from "../types";
 
@@ -80,6 +81,9 @@ export async function testLocalRuntime(provider: string, endpoint: string): Prom
 }
 
 export async function getDashboard(range: RangeKey): Promise<DashboardSnapshot> {
+  if (import.meta.env.DEV && errorPreview) throw new Error("Visual QA: the local ledger could not be read. Retry after the source becomes available.");
+  if (import.meta.env.DEV && loadingPreview) return new Promise<DashboardSnapshot>(() => {});
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).dashboard(range);
   if (!isTauri()) return emptySnapshot(range);
   return invoke<DashboardSnapshot>("dashboard_snapshot", { range });
 }
@@ -105,7 +109,7 @@ export async function renameDevice(name: string): Promise<Device> {
 }
 
 export async function getSetting(key: string): Promise<string | null> {
-  if (!isTauri()) return null;
+  if (!isTauri()) return samplePreview && key === "theme" ? "dark" : null;
   return invoke<string | null>("get_setting", { key });
 }
 
@@ -145,6 +149,7 @@ export async function syncCloudNow(): Promise<SyncReport> {
 }
 
 export async function getCacheEfficiency(range: CacheRange, provider?: string): Promise<CacheEfficiencyReport> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).cacheReport(range, provider);
   if (!isTauri()) return {
     range,
     providerFilter: provider ?? null,
@@ -171,11 +176,13 @@ export async function getCacheEfficiency(range: CacheRange, provider?: string): 
 }
 
 export async function getSessionPage(query: SessionQuery): Promise<SessionPage> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).sessionPage(query);
   if (!isTauri()) return { sessions: [], totalCount: 0, stats: { sessionCount: 0, totalTokens: 0, estimatedApiValueUsdMicros: null }, hasMore: false };
   return invoke<SessionPage>("session_page", { query });
 }
 
 export async function getSessionDetail(session: Pick<SessionDetail["session"], "provider" | "source" | "nativeSessionId">, limit = 100, offset = 0): Promise<SessionDetail> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).sessionDetail(session);
   return invoke<SessionDetail>("session_detail", { provider: session.provider, source: session.source, nativeSessionId: session.nativeSessionId, limit, offset });
 }
 
@@ -198,6 +205,7 @@ const previewQuota: ProviderQuotaState = {
 };
 
 export async function getClaudeQuotaStatus(): Promise<ProviderQuotaState> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).quota();
   if (!isTauri()) return previewQuota;
   return invoke<ProviderQuotaState>("claude_quota_status");
 }
