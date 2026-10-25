@@ -1,3 +1,4 @@
+import { SegmentedControl } from "./Primitives";
 import type { RangeKey } from "../types";
 
 const ranges: { key: RangeKey; label: string }[] = [
@@ -9,13 +10,5 @@ const ranges: { key: RangeKey; label: string }[] = [
 ];
 
 export function RangeSelector({ value, onChange }: { value: RangeKey; onChange: (range: RangeKey) => void }) {
-  return (
-    <div className="range-selector" role="group" aria-label="Time range">
-      {ranges.map((range) => (
-        <button key={range.key} type="button" className={range.key === value ? "active" : ""} onClick={() => onChange(range.key)}>
-          {range.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <SegmentedControl label="Time range" value={value} options={ranges.map((range) => ({value:range.key,label:range.label}))} onChange={onChange} />;
 }

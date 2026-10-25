@@ -1,6 +1,6 @@
 {
   "name": "arcmeter",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "engines": {

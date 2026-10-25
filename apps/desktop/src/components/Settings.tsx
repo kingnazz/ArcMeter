@@ -1,15 +1,19 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { isTauri } from "@tauri-apps/api/core";
-import { Activity as ActivityIcon, Check, CloudOff, Copy, Gauge, Globe2, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Activity as ActivityIcon, Check, CloudOff, Copy, Gauge, Globe2, HardDrive, Laptop, RefreshCw, Save, Moon, Sun, Monitor, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, Subscription } from "../types";
-import { formatMinutes, formatRelativeTime, formatTokens, formatUsdTicks, providerLabel } from "../lib/format";
+import { formatMinutes, formatRelativeTime, formatTokens, formatUsdCents, formatUsdTicks, providerLabel } from "../lib/format";
 import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
 import { UpdateSettingRow } from "./AppUpdater";
+import { SegmentedControl } from "./Primitives";
 import { LocalModelSettings } from "./LocalModels";
 
+const preferenceSections = [{key:"general",label:"General"},{key:"appearance",label:"Appearance"},{key:"collection",label:"Collection"},{key:"providers",label:"Providers"},{key:"local-models",label:"Local Models"},{key:"sync",label:"Sync & account"},{key:"privacy",label:"Privacy"},{key:"updates",label:"Updates"}];
+
 interface SettingsProps {
+  initialSection?: string;
   data: DashboardSnapshot;
   claudeQuota?: ProviderQuotaState | null;
   grokQuota?: ProviderQuotaState | null;
@@ -24,7 +28,8 @@ interface SettingsProps {
   onRefreshGrokQuota?: () => Promise<void>;
 }
 
-export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSync, onSaveSubscription, onRenameDevice, onToggleClaudeQuota, onRefreshClaudeQuota, onToggleGrokQuota, onRefreshGrokQuota }: SettingsProps) {
+export function Settings({ initialSection = "general", data, claudeQuota, grokQuota, scanning, onScan, onSync, onSaveSubscription, onRenameDevice, onToggleClaudeQuota, onRefreshClaudeQuota, onToggleGrokQuota, onRefreshGrokQuota }: SettingsProps) {
+  const [section, setSection] = useState(initialSection);
   const [deviceName, setDeviceName] = useState(data.device.friendlyName);
   const [savingDevice, setSavingDevice] = useState(false);
   const [autostart, setAutostart] = useState(false);
@@ -54,6 +59,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
     try {
       await onRenameDevice(deviceName.trim());
       setMessage("Device name saved");
+    } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Device name could not be saved");
     } finally {
       setSavingDevice(false);
     }
@@ -69,8 +75,10 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
   }
 
   async function toggleCloseToTray(next: boolean) {
-    await setSetting("close_to_tray", String(next));
-    setCloseToTray(next);
+    try {
+      await setSetting("close_to_tray", String(next));
+      setCloseToTray(next);
+    } catch { setMessage("Tray preference could not be saved"); }
   }
 
   async function syncCloud() {
@@ -86,9 +94,11 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
   }
 
   async function toggleActivity(key: "activity_claude_desktop_enabled" | "activity_browser_bridge_enabled", next: boolean) {
-    await setSetting(key, String(next));
-    setActivityStatus(await getActivityTrackingStatus());
-    setMessage(next ? "Activity tracking enabled" : "Activity tracking disabled");
+    try {
+      await setSetting(key, String(next));
+      setActivityStatus(await getActivityTrackingStatus());
+      setMessage(next ? "Activity tracking enabled" : "Activity tracking disabled");
+    } catch { setMessage("Activity tracking could not be changed"); }
   }
 
   async function copyPairingToken() {
@@ -156,15 +166,15 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
     : data.device.os === "macos" ? "Checking" : "macOS only";
 
   return (
-    <div className="settings-layout">
-      {message ? <button className="toast" type="button" onClick={() => setMessage(null)}><Check />{message}</button> : null}
-      <LocalModelSettings data={data.localModels} onRefresh={onScan} />
-      <section className="settings-section">
+    <div className="preferences"><nav className="preferences-nav" aria-label="Preference sections">{preferenceSections.map((item) => <button type="button" key={item.key} aria-current={section === item.key ? "page" : undefined} className={section === item.key ? "active" : ""} onClick={() => setSection(item.key)}>{item.label}</button>)}</nav><div className="settings-layout">
+      {message ? <button className="toast" role="status" type="button" onClick={() => setMessage(null)}><Check />{message}</button> : null}
+      <div hidden={section !== "local-models"}><LocalModelSettings data={data.localModels} onRefresh={onScan} /></div>
+      <section className="settings-section" hidden={section !== "sync"}>
         <SettingsHeading title="Account" description="Secure cloud sync across your ArcMeter devices." />
         <AccountPanel auth={auth} onChange={setAuth} />
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" hidden={section !== "providers"}>
         <SettingsHeading title="Grok live limits" description="Experimental · server-reported Grok subscription quota, separate from Grok Build telemetry and Grok Web activity." />
         <div className="settings-panel claude-quota-setting">
           <span className="setting-row-icon"><Gauge /></span>
@@ -184,7 +194,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
         </div>
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" hidden={section !== "providers"}>
         <SettingsHeading title="Claude live limits" description="Experimental · server-reported Claude account quota, separate from local usage." />
         <div className="settings-panel claude-quota-setting">
           <span className="setting-row-icon"><Gauge /></span>
@@ -203,7 +213,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
         </div>
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" hidden={section !== "general"}>
         <SettingsHeading title="Devices" description="Each installation has a stable identity independent of its hostname." />
         <div className="settings-panel device-panel">
           <div className="device-avatar"><Laptop /></div>
@@ -215,12 +225,12 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
               <span>Seen {formatRelativeTime(data.device.lastSeenAt)}</span>
             </div>
           </div>
-          <button type="button" className="icon-button labeled" disabled={savingDevice || deviceName.trim() === data.device.friendlyName} onClick={() => void saveDeviceName()}><Save />Save</button>
+          <button type="button" className="icon-button labeled" disabled={savingDevice || !deviceName.trim() || deviceName.trim() === data.device.friendlyName} onClick={() => void saveDeviceName()}><Save />Save</button>
           <ConnectionStatus device={data.device} />
         </div>
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" hidden={section !== "collection"}>
         <SettingsHeading title="AI sources" description="Tool telemetry does not establish inference location. Routing remains unknown; sensitive content stays outside ArcMeter." action={<button type="button" className="secondary-button" onClick={() => void onScan()} disabled={scanning}><RefreshCw className={scanning ? "spin" : ""} />{scanning ? "Scanning" : "Scan now"}</button>} />
         <div className="source-settings-grid">
           {data.sources.map((source) => (
@@ -255,7 +265,7 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
         </div>
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" hidden={section !== "collection"}>
         <SettingsHeading title="Activity tracking" description="Optional foreground-time signals for apps that do not expose trustworthy token telemetry." />
         <div className="settings-panel toggles-panel">
           <SettingToggle
@@ -287,28 +297,48 @@ export function Settings({ data, claudeQuota, grokQuota, scanning, onScan, onSyn
         </div>
       </section>
 
-      <section className="settings-section">
-        <SettingsHeading title="Subscriptions" description="Track actual recurring cost separately from API-equivalent value." />
+      <section className="settings-section" hidden={section !== "providers"}>
+        <SettingsHeading title="Subscriptions" description="Track actual recurring cost separately from API-equivalent value." action={<span className="subscription-total">{formatUsdCents(data.metrics.monthlySubscriptionUsdCents)} / month</span>} />
         <div className="subscriptions-list">
-          {data.subscriptions.map((subscription) => <SubscriptionRow key={subscription.id} subscription={subscription} onSave={onSaveSubscription} />)}
+          {data.subscriptions.length ? data.subscriptions.map((subscription) => <SubscriptionRow key={subscription.id} subscription={subscription} onSave={onSaveSubscription} />) : <p className="preferences-empty">No subscriptions configured.</p>}
         </div>
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" hidden={section !== "general"}>
         <SettingsHeading title="Application" description="Background utility behavior on this computer." />
         <div className="settings-panel toggles-panel">
-          <div className="setting-row"><span className="setting-row-icon"><Laptop /></span><div><strong>Appearance</strong><p>Match your system or choose a theme for ArcMeter.</p></div><select aria-label="Appearance" value={theme} onChange={(e) => { const next = e.target.value; setTheme(next); document.documentElement.dataset.theme = next; void setSetting("theme", next); }}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></div>
-          <div className="setting-row">
+          <SettingToggle icon={<RefreshCw />} title="Launch at login" detail="Start ArcMeter quietly after you sign in to this computer." checked={autostart} onChange={(value) => void toggleAutostart(value)} />
+          <SettingToggle icon={<HardDrive />} title="Keep running in tray" detail="Closing the dashboard keeps local collection active." checked={closeToTray} onChange={(value) => void toggleCloseToTray(value)} />
+
+        </div>
+      </section>
+
+      <section className="settings-section" hidden={section !== "appearance"}>
+        <SettingsHeading title="Appearance" description="A calm workspace, in any light." />
+        <div className="settings-panel appearance-panel">
+          <div className="theme-preview" aria-hidden="true"><div /><div><i /><i /><i /><span /></div></div>
+          <div><strong>Interface theme</strong><p>System follows this computer’s appearance.</p>
+          <SegmentedControl label="Appearance" value={theme} options={[{value:"dark",label:"Dark",icon:<Moon />},{value:"light",label:"Light",icon:<Sun />},{value:"system",label:"System",icon:<Monitor />}]} onChange={(next) => {
+            const previous = theme; setTheme(next); document.documentElement.dataset.theme = next;
+            void setSetting("theme",next).catch(() => { setTheme(previous); document.documentElement.dataset.theme = previous; setMessage("Appearance could not be saved"); });
+          }} /></div>
+        </div>
+      </section>
+      <section className="settings-section" hidden={section !== "sync"}><SettingsHeading title="Synchronization" description="Combine normalized metadata across your devices." /><div className="settings-panel">          <div className="setting-row">
             <span className="setting-row-icon"><CloudOff /></span>
             <div><strong>Cross-device sync</strong><p>{auth.signedIn ? `Connected as ${auth.email ?? "ArcMeter user"}. Sync sends normalized metadata only.` : "Sign in to combine this computer with your other ArcMeter devices."}</p></div>
             <button type="button" className="secondary-button" disabled={!auth.signedIn || syncing} onClick={() => void syncCloud()}><RefreshCw className={syncing ? "spin" : ""} />{syncing ? "Syncing" : "Sync now"}</button>
           </div>
-          <SettingToggle icon={<RefreshCw />} title="Launch at login" detail="Start ArcMeter quietly after you sign in to this computer." checked={autostart} onChange={(value) => void toggleAutostart(value)} />
-          <SettingToggle icon={<HardDrive />} title="Keep running in tray" detail="Closing the dashboard keeps local collection active." checked={closeToTray} onChange={(value) => void toggleCloseToTray(value)} />
-          <UpdateSettingRow currentVersion={data.device.appVersion} />
+</div></section>
+      <section className="settings-section" hidden={section !== "privacy"}>
+        <SettingsHeading title="Privacy" description="Understand what enters your ledger." />
+        <div className="settings-panel privacy-panel">
+          <ShieldCheck /><div><h3>Usage metadata. Nothing from your conversations.</h3><p>ArcMeter never collects prompts, responses, source code, full file paths, or conversation titles.</p></div>
+          <dl><div><dt>Stored locally</dt><dd>Token counts, safe model identifiers, sanitized project names, timestamps, and device metadata.</dd></div><div><dt>Runtime inventory</dt><dd>Endpoints, loaded state, and observations stay on this computer.</dd></div><div><dt>Optional cloud sync</dt><dd>Normalized metadata only. Sign-in credentials use the operating system credential store.</dd></div><div><dt>Telemetry layers</dt><dd>Runtime and tool counts remain separate. Routing stays unknown unless a source establishes it.</dd></div></dl>
         </div>
       </section>
-    </div>
+      <section className="settings-section" hidden={section !== "updates"}><SettingsHeading title="Updates" description="Keep your desktop app current." /><div className="settings-panel"><UpdateSettingRow currentVersion={data.device.appVersion} /></div></section>
+    </div></div>
   );
 }
 
@@ -331,7 +361,7 @@ function AccountPanel({ auth, onChange }: { auth: AuthStatus; onChange: (status:
     return (
       <div className="settings-panel account-panel">
         <div className="settings-icon"><CloudOff /></div>
-        <div><strong>Cloud account not configured</strong><p>Your local dashboard remains fully available offline. Add the client-safe Supabase URL and publishable key at build time to enable sign-in.</p></div>
+        <div><strong>Cloud account not configured</strong><p>Cloud sync is unavailable in this build. Your local dashboard is fully available offline.</p></div>
         <button type="button" className="secondary-button" disabled>Sign in</button>
       </div>
     );
@@ -349,8 +379,8 @@ function AccountPanel({ auth, onChange }: { auth: AuthStatus; onChange: (status:
     <form className="settings-panel account-panel auth-form" onSubmit={(event) => void submit(event)}>
       <div className="settings-icon"><ShieldCheck /></div>
       <div className="auth-fields">
-        <input type="email" autoComplete="email" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} required />
-        <input type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+        <input type="email" autoComplete="email" aria-label="Email" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} required />
+        <input type="password" autoComplete="current-password" aria-label="Password" placeholder="Password" value={password} onChange={(event) => setPassword(event.target.value)} required />
         {error ? <small>{error}</small> : null}
       </div>
       <button type="submit" className="secondary-button" disabled={busy}>{busy ? "Signing in" : "Sign in"}</button>
@@ -364,11 +394,13 @@ function SettingsHeading({ title, description, action }: { title: string; descri
 
 function SubscriptionRow({ subscription, onSave }: { subscription: Subscription; onSave: (subscription: Subscription) => Promise<void> }) {
   const [draft, setDraft] = useState(subscription);
+  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const changed = JSON.stringify(draft) !== JSON.stringify(subscription);
   async function save() {
     setSaving(true);
-    try { await onSave(draft); } finally { setSaving(false); }
+    setError(null);
+    try { await onSave(draft); } catch (reason) { setError(reason instanceof Error ? reason.message : "Subscription could not be saved"); } finally { setSaving(false); }
   }
   return (
     <div className="subscription-row">
@@ -377,6 +409,7 @@ function SubscriptionRow({ subscription, onSave }: { subscription: Subscription;
       <label className="price-input"><span>$</span><input aria-label={`${providerLabel(subscription.provider)} monthly price`} type="number" min="0" step="0.01" value={(draft.monthlyPriceUsdCents / 100).toFixed(2)} onChange={(event) => setDraft({ ...draft, monthlyPriceUsdCents: Math.max(0, Math.round(Number(event.target.value) * 100)) })} /><small>/ month</small></label>
       <label className="switch-label"><span>{draft.active ? "Active" : "Inactive"}</span><input type="checkbox" checked={draft.active} onChange={(event) => setDraft({ ...draft, active: event.target.checked })} /><i /></label>
       <button type="button" className="icon-button" aria-label="Save subscription" disabled={!changed || saving} onClick={() => void save()}><Save /></button>
+      {error ? <small className="subscription-error" role="alert">{error}</small> : null}
     </div>
   );
 }

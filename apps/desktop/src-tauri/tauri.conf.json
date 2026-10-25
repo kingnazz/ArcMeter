@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ArcMeter",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "identifier": "com.arctechone.arcmeter",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -16,14 +16,14 @@
         "title": "ArcMeter",
         "width": 1280,
         "height": 820,
-        "minWidth": 900,
+        "minWidth": 800,
         "minHeight": 640,
         "center": true,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#0b0d10",
+        "backgroundColor": "#111214",
         "visible": true
       }
     ],

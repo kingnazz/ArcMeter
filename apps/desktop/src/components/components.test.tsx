@@ -479,6 +479,7 @@ describe("important product states", () => {
     expect(document.body.textContent).not.toMatch(/Bearer|accessToken|sk-ant/);
     view.rerender(<Settings {...baseProps} claudeQuota={quota({ status: "expired_login", message: "Claude Code sign-in expired. Open Claude Code to refresh your sign-in.", windows: [] })} />);
     expect(screen.getByText(/sign-in expired/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Providers" }));
     fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
     expect(baseProps.onRefreshClaudeQuota).toHaveBeenCalledOnce();
   });
@@ -829,5 +830,53 @@ describe("important product states", () => {
     view.rerender(<Sessions initialPage={empty} />);
     fireEvent.change(screen.getByLabelText("Search projects"), { target: { value: "ArcMeter" } });
     expect(await screen.findByRole("heading", { name: "No sessions match these filters" })).toBeInTheDocument();
+  });
+});
+
+
+describe("desktop preference navigation", () => {
+  function preferences() {
+    const data = snapshot();
+    return <Settings data={data} scanning={false} onScan={vi.fn(() => Promise.resolve())} onSync={vi.fn(() => Promise.resolve())} onSaveSubscription={vi.fn(() => Promise.resolve())} onRenameDevice={vi.fn(() => Promise.resolve(data.device))} />;
+  }
+  it("shows focused sections and preserves a draft while navigating", () => {
+    render(preferences());
+    const name = screen.getByLabelText("Friendly name");
+    fireEvent.change(name,{target:{value:"My Studio"}});
+    fireEvent.click(screen.getByRole("button",{name:"Privacy"}));
+    expect(screen.getByRole("heading",{name:"Privacy"})).toBeVisible();
+    expect(screen.queryByRole("textbox",{name:"Friendly name"})).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"General"}));
+    expect(screen.getByLabelText("Friendly name")).toHaveValue("My Studio");
+  });
+  it("supports Dark, Light and System with keyboard-operable selection", () => {
+    render(preferences());
+    fireEvent.click(screen.getByRole("button",{name:"Appearance"}));
+    const appearance = screen.getByRole("group",{name:"Appearance"});
+    const dark = within(appearance).getByRole("button",{name:"Dark"});
+    fireEvent.click(dark);
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    fireEvent.keyDown(dark,{key:"ArrowRight"});
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(within(appearance).getByRole("button",{name:"Light"})).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!,{key:"ArrowRight"});
+    expect(document.documentElement.dataset.theme).toBe("system");
+    expect(within(appearance).getByRole("button",{name:"System"})).toHaveAttribute("aria-pressed","true");
+  });
+});
+
+
+describe("quota attention hierarchy", () => {
+  it("surfaces fresh cap-bearing risks and suppresses stale or informational projections", () => {
+    const data = snapshot();
+    const live = quota({analyses:[analysis()]});
+    const view = render(<Overview data={data} quotas={[live]} scanning={false} onScan={vi.fn()} />);
+    expect(screen.getByRole("status",{name:"Quota attention"})).toHaveTextContent("may reach its limit before reset");
+    expect(screen.getByRole("link",{name:"Review limits"})).toHaveAttribute("href","#claude-live-limits-title");
+    view.rerender(<Overview data={data} quotas={[{...live,stale:true}]} scanning={false} onScan={vi.fn()} />);
+    expect(screen.queryByRole("status",{name:"Quota attention"})).not.toBeInTheDocument();
+    expect(screen.getByRole("heading",{name:"Claude live limits"})).toBeInTheDocument();
+    view.rerender(<Overview data={data} quotas={[quota({analyses:[analysis({capBearing:false,status:"informational"})]})]} scanning={false} onScan={vi.fn()} />);
+    expect(screen.queryByRole("status",{name:"Quota attention"})).not.toBeInTheDocument();
   });
 });
