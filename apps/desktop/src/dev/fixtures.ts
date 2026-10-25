@@ -55,7 +55,7 @@ export function dashboard(range: RangeKey): DashboardSnapshot {
     activity,insights:[{id:"source",title:"Claude is your leading source",detail:"5.12M recorded tokens in the selected period. Source counts may overlap.",tone:"neutral"},{id:"cache",title:"Input reuse is measurable",detail:"Explore provider-specific cache semantics and partial pricing coverage below.",tone:"positive"},{id:"runtime",title:"Local runtime history available",detail:"oMLX reports hourly usage. Loaded inventory does not establish active inference.",tone:"neutral"}],
     sources:breakdown.filter((b)=>b.key!=="omlx").map((b)=>({provider:b.key,label:b.label,detected:true,filesSeen:4,recordsSeen:42,recordsInserted:0,measuredRecords:42,measuredSessions:9,measuredTurns:42,measuredTokens:b.tokens,cacheReadTokens:1_200_000,cacheWriteTokens:0,nativeCostUsdTicks:null,lastScanAt:stamp(1),lastUsageAt:stamp(3),status:"healthy",diagnostics:[]})),
     subscriptions:[{id:"sample-subscription",provider:"anthropic",planName:"Max",monthlyPriceUsdCents:20000,billingCadence:"monthly",active:true,updatedAt:stamp(1)}],
-    device:{id:"sample-device",friendlyName:"Studio",os:"macos",architecture:"aarch64",appVersion:"0.4.0",createdAt:stamp(10080),lastSeenAt:stamp(1),lastSyncAt:null,syncStatus:"local_only"},
+    device:{id:"sample-device",friendlyName:"Studio",os:"macos",architecture:"aarch64",appVersion:"0.5.0",createdAt:stamp(10080),lastSeenAt:stamp(1),lastSyncAt:null,syncStatus:"local_only"},
   };
 }
 export function quota(): ProviderQuotaState {

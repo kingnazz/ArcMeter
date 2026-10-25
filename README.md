@@ -27,7 +27,7 @@ All JavaScript package versions are exact-pinned and both `pnpm-lock.yaml` and `
 
 ```text
 apps/desktop/                 React renderer and Tauri application
-  src/                        Four product views and design system
+  src/                        Six product views and design system
   src-tauri/                  Trusted Rust layer
     migrations/               Local SQLite schema
     src/collectors/           Native read-only collectors
@@ -116,7 +116,7 @@ Collection runs immediately at startup and every 60 seconds while ArcMeter remai
 Claude Desktop and the consumer Grok web app do not expose authoritative local token counts, so ArcMeter never estimates tokens for them. Their opt-in collectors create one deterministic `activity_only` event per sampled UTC minute:
 
 - On macOS, Claude Desktop is counted only while its bundle is frontmost. ArcMeter reads the bundle identifier, not a window title or conversation.
-- For grok.com, load `extensions/arcmeter-browser-activity` as an unpacked Chrome-compatible extension and pair it with the token in **Settings → Activity tracking**. The extension checks the active domain locally and sends only `grok_web` plus the current minute to ArcMeter over `127.0.0.1`.
+- For grok.com, load `extensions/arcmeter-browser-activity` as an unpacked Chrome-compatible extension and pair it with the token in **Settings → Collection → Activity tracking**. The extension checks the active domain locally and sends only `grok_web` plus the current minute to ArcMeter over `127.0.0.1`.
 
 Repeated samples in the same minute resolve to the same deterministic event ID. Activity-only rows sync through the existing authenticated, owner-scoped usage ledger but never contribute to measured tokens or API-equivalent value.
 

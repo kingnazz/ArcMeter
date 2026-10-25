@@ -175,7 +175,7 @@ export default function App() {
           </div>)}
         </nav>
         <div className="sidebar-footer">
-          <div className="sidebar-device"><Monitor /><div><strong>{data?.device.friendlyName ?? "This computer"}</strong><small>v{data?.device.appVersion ?? "0.4.0"} · {isTauri() ? "Desktop" : "Browser preview"}</small></div></div>
+          <div className="sidebar-device"><Monitor /><div><strong>{data?.device.friendlyName ?? "This computer"}</strong><small>v{data?.device.appVersion ?? "0.5.0"} · {isTauri() ? "Desktop" : "Browser preview"}</small></div></div>
           <span className="privacy-status"><ShieldCheck />Metadata only · private by default</span>
         </div>
       </aside>

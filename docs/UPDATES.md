@@ -1,6 +1,6 @@
 # ArcMeter signed updates
 
-ArcMeter checks for signed updates in the background and exposes a manual check in **Settings → Application → Signed updates**. A newer release is never installed silently. The user must choose **Install**, and the updater verifies the downloaded bundle against the public key compiled into ArcMeter before it replaces the installed version.
+ArcMeter checks for signed updates in the background and exposes a manual check in **Settings → Updates → Signed updates**. A newer release is never installed silently. The user must choose **Install**, and the updater verifies the downloaded bundle against the public key compiled into ArcMeter before it replaces the installed version.
 
 The stable update endpoint is:
 
