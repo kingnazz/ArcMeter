@@ -115,6 +115,9 @@ main { margin: 0 auto; }
 .auth-fields input { padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; outline: 0; background: var(--bg); color: var(--text); }
 .auth-fields input:focus { border-color: var(--border-strong); }
 .auth-fields small { grid-column: 1/-1; color: var(--danger); font-size: 10px; }
+.toast-error { border-color: var(--danger); background: var(--surface-1); }
+.toast-error svg { color: var(--danger); }
+.toast button { border: 0; padding: 4px; background: transparent; color: inherit; cursor: pointer; }
 
 .session-cache-summary { display: flex; flex-direction: column; gap: 9px; }
 .session-cache-reuse { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 3px 8px; padding: 9px 10px; border-left: 2px solid var(--accent); background: rgba(182,243,107,.035); }

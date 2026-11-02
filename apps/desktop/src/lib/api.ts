@@ -8,7 +8,7 @@ const unavailableDevice: Device = {
   friendlyName: "Local preview",
   os: "unknown",
   architecture: "unknown",
-  appVersion: "0.5.0",
+  appVersion: "0.5.1",
   createdAt: previewNow,
   lastSeenAt: previewNow,
   lastSyncAt: null,
@@ -144,8 +144,27 @@ export async function signOut(): Promise<AuthStatus> {
   return invoke<AuthStatus>("auth_sign_out");
 }
 
+export const SESSION_EXPIRED_MESSAGE = "Your ArcMeter session expired. Sign in again to resume cloud sync.";
+
+export class SessionExpiredError extends Error {
+  constructor() {
+    super(SESSION_EXPIRED_MESSAGE);
+    this.name = "SessionExpiredError";
+  }
+}
+
 export async function syncCloudNow(): Promise<SyncReport> {
-  return invoke<SyncReport>("sync_now");
+  try {
+    return await invoke<SyncReport>("sync_now");
+  } catch (reason) {
+    if (typeof reason === "object" && reason !== null && "code" in reason && reason.code === "session_expired") {
+      throw new SessionExpiredError();
+    }
+    if (typeof reason === "object" && reason !== null && "message" in reason && typeof reason.message === "string") {
+      throw new Error(reason.message, { cause: reason });
+    }
+    throw reason;
+  }
 }
 
 export async function getCacheEfficiency(range: CacheRange, provider?: string): Promise<CacheEfficiencyReport> {

@@ -1,10 +1,10 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { isTauri } from "@tauri-apps/api/core";
 import { Activity as ActivityIcon, Check, CloudOff, Copy, Gauge, Globe2, HardDrive, Laptop, RefreshCw, Save, Moon, Sun, Monitor, ShieldCheck, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, ProviderQuotaState, Subscription } from "../types";
 import { formatMinutes, formatRelativeTime, formatTokens, formatUsdCents, formatUsdTicks, providerLabel } from "../lib/format";
-import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
+import { getActivityTrackingStatus, getAuthStatus, getSetting, SessionExpiredError, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
 import { UpdateSettingRow } from "./AppUpdater";
 import { SegmentedControl } from "./Primitives";
@@ -34,19 +34,38 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
   const [savingDevice, setSavingDevice] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [closeToTray, setCloseToTray] = useState(true);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [auth, setAuth] = useState<AuthStatus>({ configured: false, signedIn: false, email: null, expiresAt: null });
   const [syncing, setSyncing] = useState(false);
   const [activityStatus, setActivityStatus] = useState<ActivityTrackingStatus | null>(null);
   const [quotaBusy, setQuotaBusy] = useState(false);
   const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "system");
+  const authRequest = useRef({ version: 0 });
+
+  const refreshAuth = useCallback(async () => {
+    const request = ++authRequest.current.version;
+    const status = await getAuthStatus();
+    if (request === authRequest.current.version) setAuth(status);
+  }, []);
+
+  function changeAuth(status: AuthStatus) {
+    ++authRequest.current.version;
+    setAuth(status);
+    setMessage(null);
+  }
 
   useEffect(() => {
     if (!isTauri()) return;
     void isEnabled().then(setAutostart).catch(() => setAutostart(false));
     void getSetting("close_to_tray").then((value) => setCloseToTray(value !== "false"));
-    void getAuthStatus().then(setAuth);
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const requests = authRequest.current;
+    void refreshAuth().catch(() => setMessage({ kind: "error", text: "Could not check your ArcMeter account. Try again." }));
+    return () => { ++requests.version; };
+  }, [data.generatedAt, refreshAuth]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -58,8 +77,8 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     setSavingDevice(true);
     try {
       await onRenameDevice(deviceName.trim());
-      setMessage("Device name saved");
-    } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Device name could not be saved");
+      setMessage({ kind: "success", text: "Device name saved" });
+    } catch (reason) { setMessage({ kind: "error", text: reason instanceof Error ? reason.message : "Device name could not be saved" });
     } finally {
       setSavingDevice(false);
     }
@@ -70,7 +89,7 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
       if (next) await enable(); else await disable();
       setAutostart(next);
     } catch {
-      setMessage("Launch-at-login could not be changed on this system");
+      setMessage({ kind: "error", text: "Launch-at-login could not be changed on this system" });
     }
   }
 
@@ -78,16 +97,23 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     try {
       await setSetting("close_to_tray", String(next));
       setCloseToTray(next);
-    } catch { setMessage("Tray preference could not be saved"); }
+    } catch { setMessage({ kind: "error", text: "Tray preference could not be saved" }); }
   }
 
   async function syncCloud() {
     setSyncing(true);
     try {
       await onSync();
-      setMessage("Cloud metadata synchronized");
+      setMessage({ kind: "success", text: "Cloud metadata synchronized" });
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : String(reason));
+      if (reason instanceof SessionExpiredError) {
+        // Drop the rejected identity immediately, including when the status IPC
+        // call fails. Invalidate any older in-flight status read as well.
+        ++authRequest.current.version;
+        setAuth((current) => ({ ...current, signedIn: false, email: null, expiresAt: null }));
+      }
+      setMessage({ kind: "error", text: reason instanceof Error ? reason.message : String(reason) });
+      await refreshAuth().catch(() => { /* Keep the known signed-out state if IPC is unavailable. */ });
     } finally {
       setSyncing(false);
     }
@@ -97,14 +123,14 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     try {
       await setSetting(key, String(next));
       setActivityStatus(await getActivityTrackingStatus());
-      setMessage(next ? "Activity tracking enabled" : "Activity tracking disabled");
-    } catch { setMessage("Activity tracking could not be changed"); }
+      setMessage({ kind: "success", text: next ? "Activity tracking enabled" : "Activity tracking disabled" });
+    } catch { setMessage({ kind: "error", text: "Activity tracking could not be changed" }); }
   }
 
   async function copyPairingToken() {
     if (!activityStatus?.pairingToken) return;
     await navigator.clipboard.writeText(activityStatus.pairingToken);
-    setMessage("Browser pairing token copied");
+    setMessage({ kind: "success", text: "Browser pairing token copied" });
   }
 
   async function toggleClaudeQuota(enabled: boolean) {
@@ -112,9 +138,9 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     setQuotaBusy(true);
     try {
       await onToggleClaudeQuota(enabled);
-      setMessage(enabled ? "Claude live limits enabled" : "Claude live limits disabled");
+      setMessage({ kind: "success", text: enabled ? "Claude live limits enabled" : "Claude live limits disabled" });
     } catch {
-      setMessage("Claude live limits could not be changed");
+      setMessage({ kind: "error", text: "Claude live limits could not be changed" });
     } finally {
       setQuotaBusy(false);
     }
@@ -125,9 +151,9 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     setQuotaBusy(true);
     try {
       await onRefreshClaudeQuota();
-      setMessage("Claude live limits refreshed");
+      setMessage({ kind: "success", text: "Claude live limits refreshed" });
     } catch {
-      setMessage("Claude live limits could not be refreshed");
+      setMessage({ kind: "error", text: "Claude live limits could not be refreshed" });
     } finally {
       setQuotaBusy(false);
     }
@@ -138,9 +164,9 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     setQuotaBusy(true);
     try {
       await onToggleGrokQuota(enabled);
-      setMessage(enabled ? "Grok live limits enabled" : "Grok live limits disabled");
+      setMessage({ kind: "success", text: enabled ? "Grok live limits enabled" : "Grok live limits disabled" });
     } catch {
-      setMessage("Grok live limits could not be changed");
+      setMessage({ kind: "error", text: "Grok live limits could not be changed" });
     } finally {
       setQuotaBusy(false);
     }
@@ -151,9 +177,9 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
     setQuotaBusy(true);
     try {
       await onRefreshGrokQuota();
-      setMessage("Grok live limits refreshed");
+      setMessage({ kind: "success", text: "Grok live limits refreshed" });
     } catch {
-      setMessage("Grok live limits could not be refreshed");
+      setMessage({ kind: "error", text: "Grok live limits could not be refreshed" });
     } finally {
       setQuotaBusy(false);
     }
@@ -167,11 +193,11 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
 
   return (
     <div className="preferences"><nav className="preferences-nav" aria-label="Preference sections">{preferenceSections.map((item) => <button type="button" key={item.key} aria-current={section === item.key ? "page" : undefined} className={section === item.key ? "active" : ""} onClick={() => setSection(item.key)}>{item.label}</button>)}</nav><div className="settings-layout">
-      {message ? <button className="toast" role="status" type="button" onClick={() => setMessage(null)}><Check />{message}</button> : null}
+      {message ? <div className={`toast toast-${message.kind}`} role={message.kind === "error" ? "alert" : "status"}>{message.kind === "error" ? <TriangleAlert aria-hidden="true" /> : <Check aria-hidden="true" />}<span>{message.text}</span><button type="button" aria-label="Dismiss notification" onClick={() => setMessage(null)}>×</button></div> : null}
       <div hidden={section !== "local-models"}><LocalModelSettings data={data.localModels} onRefresh={onScan} /></div>
       <section className="settings-section" hidden={section !== "sync"}>
         <SettingsHeading title="Account" description="Secure cloud sync across your ArcMeter devices." />
-        <AccountPanel auth={auth} onChange={setAuth} />
+        <AccountPanel auth={auth} onChange={changeAuth} />
       </section>
 
       <section className="settings-section" hidden={section !== "providers"}>
@@ -320,7 +346,7 @@ export function Settings({ initialSection = "general", data, claudeQuota, grokQu
           <div><strong>Interface theme</strong><p>System follows this computer’s appearance.</p>
           <SegmentedControl label="Appearance" value={theme} options={[{value:"dark",label:"Dark",icon:<Moon />},{value:"light",label:"Light",icon:<Sun />},{value:"system",label:"System",icon:<Monitor />}]} onChange={(next) => {
             const previous = theme; setTheme(next); document.documentElement.dataset.theme = next;
-            void setSetting("theme",next).catch(() => { setTheme(previous); document.documentElement.dataset.theme = previous; setMessage("Appearance could not be saved"); });
+            void setSetting("theme",next).catch(() => { setTheme(previous); document.documentElement.dataset.theme = previous; setMessage({ kind: "error", text: "Appearance could not be saved" }); });
           }} /></div>
         </div>
       </section>

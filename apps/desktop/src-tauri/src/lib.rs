@@ -140,6 +140,10 @@ pub fn run() {
                             failures = 0;
                             let _ = sync_handle.emit("arcmeter://data-changed", ());
                         }
+                        Err(sync::SyncError::Auth(auth::AuthError::SessionExpired)) => {
+                            failures = 0;
+                            let _ = sync_handle.emit("arcmeter://data-changed", ());
+                        }
                         Err(_) => {
                             failures = failures.saturating_add(1);
                             tokio::time::sleep(policy.delay(failures)).await;
@@ -276,8 +280,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let Some(state) = app.try_state::<AppState>() else {
                         return;
                     };
-                    if sync::sync_now(&state.database).await.is_ok() {
-                        let _ = app.emit("arcmeter://data-changed", ());
+                    match sync::sync_now(&state.database).await {
+                        Ok(_) | Err(sync::SyncError::Auth(auth::AuthError::SessionExpired)) => {
+                            let _ = app.emit("arcmeter://data-changed", ());
+                        }
+                        Err(_) => {}
                     }
                 });
             }
