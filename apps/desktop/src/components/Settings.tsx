@@ -1,10 +1,10 @@
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { isTauri } from "@tauri-apps/api/core";
 import { Activity as ActivityIcon, Check, CloudOff, Copy, Globe2, HardDrive, Laptop, RefreshCw, Save, ShieldCheck, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, Subscription } from "../types";
 import { formatMinutes, formatRelativeTime, formatTokens, providerLabel } from "../lib/format";
-import { getActivityTrackingStatus, getAuthStatus, getSetting, setSetting, signIn, signOut } from "../lib/api";
+import { getActivityTrackingStatus, getAuthStatus, getSetting, SessionExpiredError, setSetting, signIn, signOut } from "../lib/api";
 import { ProviderMark } from "./ProviderMark";
 import { UpdateSettingRow } from "./AppUpdater";
 
@@ -22,17 +22,36 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
   const [savingDevice, setSavingDevice] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [closeToTray, setCloseToTray] = useState(true);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [auth, setAuth] = useState<AuthStatus>({ configured: false, signedIn: false, email: null, expiresAt: null });
   const [syncing, setSyncing] = useState(false);
   const [activityStatus, setActivityStatus] = useState<ActivityTrackingStatus | null>(null);
+  const authRequest = useRef({ version: 0 });
+
+  const refreshAuth = useCallback(async () => {
+    const request = ++authRequest.current.version;
+    const status = await getAuthStatus();
+    if (request === authRequest.current.version) setAuth(status);
+  }, []);
+
+  function changeAuth(status: AuthStatus) {
+    ++authRequest.current.version;
+    setAuth(status);
+    setMessage(null);
+  }
 
   useEffect(() => {
     if (!isTauri()) return;
     void isEnabled().then(setAutostart).catch(() => setAutostart(false));
     void getSetting("close_to_tray").then((value) => setCloseToTray(value !== "false"));
-    void getAuthStatus().then(setAuth);
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const requests = authRequest.current;
+    void refreshAuth().catch(() => setMessage({ kind: "error", text: "Could not check your ArcMeter account. Try again." }));
+    return () => { ++requests.version; };
+  }, [data.generatedAt, refreshAuth]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -44,7 +63,7 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
     setSavingDevice(true);
     try {
       await onRenameDevice(deviceName.trim());
-      setMessage("Device name saved");
+      setMessage({ kind: "success", text: "Device name saved" });
     } finally {
       setSavingDevice(false);
     }
@@ -55,7 +74,7 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
       if (next) await enable(); else await disable();
       setAutostart(next);
     } catch {
-      setMessage("Launch-at-login could not be changed on this system");
+      setMessage({ kind: "error", text: "Launch-at-login could not be changed on this system" });
     }
   }
 
@@ -68,9 +87,16 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
     setSyncing(true);
     try {
       await onSync();
-      setMessage("Cloud metadata synchronized");
+      setMessage({ kind: "success", text: "Cloud metadata synchronized" });
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : String(reason));
+      if (reason instanceof SessionExpiredError) {
+        // Drop the rejected identity immediately, including when the status IPC
+        // call fails. Invalidate any older in-flight status read as well.
+        ++authRequest.current.version;
+        setAuth((current) => ({ ...current, signedIn: false, email: null, expiresAt: null }));
+      }
+      setMessage({ kind: "error", text: reason instanceof Error ? reason.message : String(reason) });
+      await refreshAuth().catch(() => { /* Keep the known signed-out state if IPC is unavailable. */ });
     } finally {
       setSyncing(false);
     }
@@ -79,13 +105,13 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
   async function toggleActivity(key: "activity_claude_desktop_enabled" | "activity_browser_bridge_enabled", next: boolean) {
     await setSetting(key, String(next));
     setActivityStatus(await getActivityTrackingStatus());
-    setMessage(next ? "Activity tracking enabled" : "Activity tracking disabled");
+    setMessage({ kind: "success", text: next ? "Activity tracking enabled" : "Activity tracking disabled" });
   }
 
   async function copyPairingToken() {
     if (!activityStatus?.pairingToken) return;
     await navigator.clipboard.writeText(activityStatus.pairingToken);
-    setMessage("Browser pairing token copied");
+    setMessage({ kind: "success", text: "Browser pairing token copied" });
   }
 
   const claudeDesktopStatusLabel = activityStatus
@@ -96,10 +122,10 @@ export function Settings({ data, scanning, onScan, onSync, onSaveSubscription, o
 
   return (
     <div className="settings-layout">
-      {message ? <button className="toast" type="button" onClick={() => setMessage(null)}><Check />{message}</button> : null}
+      {message ? <div className={`toast toast-${message.kind}`} role={message.kind === "error" ? "alert" : "status"}>{message.kind === "error" ? <TriangleAlert aria-hidden="true" /> : <Check aria-hidden="true" />}<span>{message.text}</span><button type="button" aria-label="Dismiss notification" onClick={() => setMessage(null)}>×</button></div> : null}
       <section className="settings-section">
         <SettingsHeading title="Account" description="Secure cloud sync across your ArcMeter devices." />
-        <AccountPanel auth={auth} onChange={setAuth} />
+        <AccountPanel auth={auth} onChange={changeAuth} />
       </section>
 
       <section className="settings-section">

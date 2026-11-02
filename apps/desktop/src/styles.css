@@ -164,3 +164,6 @@ main { width: min(1480px, 100%); margin: 0 auto; padding: 30px 38px 64px; }
 .auth-fields input { height: 32px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; outline: 0; background: var(--bg); color: var(--text); font-size: 10px; }
 .auth-fields input:focus { border-color: var(--border-strong); }
 .auth-fields small { grid-column: 1/-1; color: var(--danger); font-size: 8px; }
+.toast-error { border-color: var(--danger); background: var(--surface-1); }
+.toast-error svg { color: var(--danger); }
+.toast button { border: 0; padding: 4px; background: transparent; color: inherit; cursor: pointer; }

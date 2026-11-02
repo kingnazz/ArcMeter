@@ -128,9 +128,9 @@ pub async fn auth_sign_out() -> Result<AuthStatus, String> {
 }
 
 #[tauri::command]
-pub async fn sync_now(state: State<'_, AppState>) -> Result<crate::sync::SyncReport, String> {
+pub async fn sync_now(
+    state: State<'_, AppState>,
+) -> Result<crate::sync::SyncReport, crate::sync::SyncCommandError> {
     let database = state.database.clone();
-    crate::sync::sync_now(&database)
-        .await
-        .map_err(|error| error.to_string())
+    crate::sync::sync_now(&database).await.map_err(Into::into)
 }

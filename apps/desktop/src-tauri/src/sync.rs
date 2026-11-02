@@ -25,6 +25,26 @@ pub enum SyncError {
     InvalidRemote(String),
 }
 
+// A stable, token-free IPC contract; the renderer never parses HTTP messages.
+#[derive(Debug, Serialize)]
+pub struct SyncCommandError {
+    code: &'static str,
+    message: String,
+}
+
+impl From<SyncError> for SyncCommandError {
+    fn from(error: SyncError) -> Self {
+        Self {
+            code: if matches!(error, SyncError::Auth(auth::AuthError::SessionExpired)) {
+                "session_expired"
+            } else {
+                "sync_failed"
+            },
+            message: error.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {
@@ -455,6 +475,24 @@ impl RetryPolicy {
 mod tests {
     use super::*;
     use crate::domain::{TokenCounts, UsageEvent};
+
+    #[test]
+    fn session_expiration_has_a_dedicated_ipc_error_code() {
+        let expired = serde_json::to_value(SyncCommandError::from(SyncError::Auth(
+            auth::AuthError::SessionExpired,
+        )))
+        .unwrap();
+        assert_eq!(expired["code"], "session_expired");
+        assert_eq!(
+            expired["message"],
+            "Your ArcMeter session expired. Sign in again to resume cloud sync."
+        );
+        let temporary = serde_json::to_value(SyncCommandError::from(SyncError::Auth(
+            auth::AuthError::Remote("HTTP 503".into()),
+        )))
+        .unwrap();
+        assert_eq!(temporary["code"], "sync_failed");
+    }
 
     #[test]
     fn retry_is_exponential_and_capped() {
