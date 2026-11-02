@@ -1,0 +1,20 @@
+{
+  "config": {
+    "creditUsagePercent": 0.0,
+    "currentPeriod": {
+      "type": "USAGE_PERIOD_TYPE_WEEKLY",
+      "start": "2026-08-28T00:00:00Z",
+      "end": "2026-09-04T00:00:00Z"
+    },
+    "onDemandCap": { "val": 5000 },
+    "onDemandUsed": { "val": 300 },
+    "prepaidBalance": { "val": 938 },
+    "isUnifiedBillingUser": true,
+    "productUsage": [
+      { "product": "PRODUCT_CHAT", "usagePercent": 41.0 },
+      { "product": "PRODUCT_GROK_BUILD", "usagePercent": 63.2 },
+      { "product": "PRODUCT_FUTURE_THING", "usagePercent": 7.25 }
+    ],
+    "unknownFutureField": true
+  }
+}

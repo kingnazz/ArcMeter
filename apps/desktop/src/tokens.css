@@ -1,0 +1,90 @@
+/* ArcMeter's shared desktop palette. Theme changes never alter provider meaning. */
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --bg: #111214;
+  --bg-raised: #151618;
+  --surface-1: #18191c;
+  --surface-2: #202125;
+  --surface-3: #2a2c31;
+  --border: #2b2d32;
+  --border-subtle: #24262a;
+  --border-strong: #44474f;
+  --text: #edeef0;
+  --text-muted: #b3b5bd;
+  --text-dim: #91959f;
+  --accent: #b8d98a;
+  --accent-strong: #c6e69e;
+  --accent-muted: #b8d98a12;
+  --success: #8fc9ab;
+  --warning: #e2b774;
+  --danger: #f18d91;
+  --info: #8bb5e9;
+  --codex: #91cfb5;
+  --claude: #dea78a;
+  --grok: #b5bcc7;
+  --gemini: #9bb8ea;
+  --runtime: #b8d98a;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-base: 13px;
+  --font-title: 24px;
+  --font-metric: 42px;
+  --shadow-menu: 0 8px 28px #0004;
+  --shadow-subtle: 0 1px 2px #0001;
+  --fast: 160ms;
+  --normal: 220ms;
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f6f5;
+  --bg-raised: #efefed;
+  --surface-1: #ffffff;
+  --surface-2: #f0f1ef;
+  --surface-3: #e4e6e2;
+  --border: #daddd6;
+  --border-subtle: #e7e9e4;
+  --border-strong: #bcc2b8;
+  --text: #222720;
+  --text-muted: #515a50;
+  --text-dim: #657061;
+  --accent: #4d702a;
+  --accent-strong: #3c5e1c;
+  --accent-muted: #5679330c;
+  --success: #347252;
+  --warning: #95601b;
+  --danger: #b63b44;
+  --info: #386da8;
+  --codex: #31745b;
+  --claude: #a55d37;
+  --grok: #596274;
+  --gemini: #486ab5;
+  --runtime: #4d702a;
+  --shadow-menu: 0 8px 28px #22301815;
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --bg: #f6f6f5; --bg-raised: #efefed; --surface-1: #fff; --surface-2: #f0f1ef; --surface-3: #e4e6e2;
+    --border: #daddd6; --border-subtle: #e7e9e4; --border-strong: #bcc2b8;
+    --text: #222720; --text-muted: #515a50; --text-dim: #657061;
+    --accent: #4d702a; --accent-strong: #3c5e1c; --accent-muted: #5679330c;
+    --success: #347252; --warning: #95601b; --danger: #b63b44; --info: #386da8;
+    --codex: #31745b; --claude: #a55d37; --grok: #596274; --gemini: #486ab5; --runtime: #4d702a;
+    --shadow-menu: 0 8px 28px #22301815;
+  }
+}

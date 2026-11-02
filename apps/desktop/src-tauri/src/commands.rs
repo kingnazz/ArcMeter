@@ -19,8 +19,24 @@ pub async fn dashboard_snapshot(
 }
 
 #[tauri::command]
+pub async fn cache_efficiency(
+    range: String,
+    provider: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<crate::cache_efficiency::CacheEfficiencyReport, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cache_efficiency::report(&database, &range, provider.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn scan_now(state: State<'_, AppState>) -> Result<ScanReport, String> {
     let _guard = state.scan_lock.lock().await;
+    let _ = crate::local_models::refresh(&state.database, &state.device_id).await;
     let database = state.database.clone();
     let device_id = state.device_id.clone();
     let report =
@@ -29,6 +45,35 @@ pub async fn scan_now(state: State<'_, AppState>) -> Result<ScanReport, String> 
             .map_err(|error| error.to_string())?;
     *state.last_scan.lock().await = report.clone();
     Ok(report)
+}
+
+#[tauri::command]
+pub async fn configure_local_runtime(
+    provider: String,
+    enabled: bool,
+    endpoint: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let _guard = state.scan_lock.lock().await;
+    crate::local_models::configure(&state.database, &provider, enabled, endpoint.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn test_local_runtime(
+    provider: String,
+    endpoint: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // Tests the draft value without persisting it or changing analytics.
+    let _guard = state.scan_lock.lock().await;
+    if !crate::local_models::providers::PROVIDERS.contains(&provider.as_str()) {
+        return Err("Unsupported runtime".into());
+    }
+    crate::local_models::providers::detect(&provider, &endpoint)
+        .await
+        .map(|models| format!("Connected · {} models available", models.len()))
+        .map_err(str::to_owned)
 }
 
 #[tauri::command]
@@ -41,6 +86,43 @@ pub async fn activity_page(
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || {
         analytics::activity_page(&database, &range, limit, offset)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn session_page(
+    query: crate::sessions::SessionQuery,
+    state: State<'_, AppState>,
+) -> Result<crate::sessions::SessionPage, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::sessions::session_page(&database, query))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn session_detail(
+    provider: String,
+    source: String,
+    native_session_id: String,
+    limit: i64,
+    offset: i64,
+    state: State<'_, AppState>,
+) -> Result<crate::sessions::SessionDetail, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::sessions::session_detail(
+            &database,
+            provider,
+            source,
+            native_session_id,
+            limit,
+            offset,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -133,4 +215,58 @@ pub async fn sync_now(
 ) -> Result<crate::sync::SyncReport, crate::sync::SyncCommandError> {
     let database = state.database.clone();
     crate::sync::sync_now(&database).await.map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn claude_quota_status(
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    crate::quota::load_state(&state.database).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_claude_quota_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    crate::quota::set_enabled(&state.database, enabled).map_err(|error| error.to_string())?;
+    if enabled {
+        Ok(crate::quota::refresh_claude(&state.database, &state.quota_runtime).await)
+    } else {
+        crate::quota::load_state(&state.database).map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_claude_quota(
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    Ok(crate::quota::refresh_claude(&state.database, &state.quota_runtime).await)
+}
+
+#[tauri::command]
+pub async fn grok_quota_status(
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    crate::quota::load_grok_state(&state.database).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_grok_quota_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    crate::quota::set_grok_enabled(&state.database, enabled).map_err(|error| error.to_string())?;
+    if enabled {
+        Ok(crate::quota::refresh_grok(&state.database, &state.quota_runtime).await)
+    } else {
+        crate::quota::load_grok_state(&state.database).map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_grok_quota(
+    state: State<'_, AppState>,
+) -> Result<crate::quota::ProviderQuotaState, String> {
+    Ok(crate::quota::refresh_grok(&state.database, &state.quota_runtime).await)
 }

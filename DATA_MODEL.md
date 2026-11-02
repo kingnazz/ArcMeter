@@ -12,13 +12,20 @@
 | `occurredAt` | UTC RFC 3339 event time. |
 | `model` | Provider-reported model when present. |
 | `projectName` | Sanitized basename only. |
-| token fields | Non-negative authoritative counters; explicit provider total wins over derived input + output. |
+| token fields | Non-negative authoritative counters, including generic 5m/1h cache-write detail. Provider documentation defines whether cache counters are included or additive. Explicit provider total wins over a derived value. |
+| `nativeCostUsdTicks` | Optional provider-recorded fixed-point cost in exact 10^-10 USD ticks; never an ArcMeter estimate. |
 | `estimatedApiValueUsdMicros` | Derived estimate, never actual spend. Null when pricing is unavailable. |
 | `pricingStatus` | `available`, `partial`, or `unavailable`. |
 | `measurementKind` | `measured`, `estimated`, or `activity_only`. |
 | `deviceId` | Stable ArcMeter installation UUID. |
 
-Codex reports cached input as a subset of input and reasoning as a subset of output. The pricing engine subtracts cached input before applying the ordinary input rate and does not add reasoning twice when the pricing rule says it is included in output.
+Codex reports cached input as a subset of input, aggregate cache writes as a
+generic input counter, and reasoning as a subset of output. The pricing engine
+subtracts cached input and aggregate cache writes before applying the ordinary
+input rate, does not infer a cache-write TTL, and does not add reasoning twice
+when the pricing rule says it is included in output.
+
+Claude reports fresh input, cache reads, cache writes, and output as separate additive counters. `cacheWriteTokens` remains the authoritative aggregate; `cacheWrite5mTokens` and `cacheWrite1hTokens` preserve TTL detail when present. Claude reasoning detail is a subset of output and is never added to total tokens a second time.
 
 ## Local SQLite
 
@@ -30,8 +37,12 @@ Codex reports cached input as a subset of input and reasoning as a subset of out
 - `pricing`: versioned effective model price rules.
 - `app_settings`: allow-listed local preferences and the persistent local device ID.
 - `schema_migrations`: applied migration record.
+- `provider_quota_snapshots`: sampled, normalized provider quota percentages and reset metadata. One deterministic snapshot group represents one provider reading; it is account state and is never summed across devices. Burn rate and exhaustion projections are bounded, same-device read-time analytics over these raw basis-point samples; derived values are not persisted.
+- `provider_quota_refresh_state`: local-only sanitized health, retry, and backoff state. The last good quota snapshot remains available when refresh fails.
 
-All monetary integers use exact minor units: subscription prices are USD cents and API-equivalent value is USD micros. Floating point is used only to display a ratio.
+All monetary integers use exact units: subscription prices are USD cents, API-equivalent value is USD micros, and provider-recorded native cost is preserved as 10^-10 USD ticks. Floating point is used only for display.
+
+Quota utilization uses integer basis points (`47.63% = 4763`). Reset and observation times use UTC RFC 3339. Extra-usage amounts are preserved in provider-returned minor units and never inferred from local token telemetry. Quota snapshot identity combines provider, source device, five-minute observation bucket, and material reset/window shape; ordinary updates within a bucket replace that sample, while a reset/window-shape change creates material history.
 
 ## Identity and collision behavior
 
@@ -41,8 +52,18 @@ When a source provides native IDs, identity is:
 sha256(provider + unit-separator + nativeSessionId + unit-separator + nativeEventId)
 ```
 
-Codex's native event identity is its JSONL ordinal inside the native session. Fallback identities hash session, timestamp, model, token counters, and the smallest stable source discriminator. SHA-256 collision risk is negligible; if one occurs, database uniqueness treats the records as one event and diagnostics provide investigation context. ArcMeter never increments a duplicate.
+Codex's native event identity is its JSONL ordinal inside the native session. Grok Build identity hashes session, completed turn, and model so one multi-model turn can produce independently deduplicated child events. Fallback identities hash session, timestamp, model, token counters, and the smallest stable source discriminator. SHA-256 collision risk is negligible; if one occurs, database uniqueness treats the records as one event and diagnostics provide investigation context. ArcMeter never increments a duplicate.
+
+Legacy Grok rows that uniquely match an authoritative completed turn are retained with `supersededByEventId` and excluded from analytics. Ambiguous rows remain active and surface a diagnostic rather than being deleted or silently hidden.
+
+Claude parser version 2 uses request identity before message/UUID identity and carries exact, local-only reconciliation hints for IDs produced by parser version 1. Proven legacy records are retained as superseded; ambiguous rows remain active. These hints contain only deterministic hashes and are not synced as a separate payload.
+
+## Read-time session summaries
+
+Sessions are not a persisted entity. The desktop derives them locally from canonical `measured` rows whose `supersededByEventId` is null, grouping by `(provider, source, nativeSessionId)`. That source-aware identity prevents provider/source collisions while canonical event IDs prevent duplicate cross-device events. The native session ID stays an opaque lookup key and is never displayed.
+
+Session project, model, device, token, pricing, and native-cost fields are rollups of those eligible rows only. API-equivalent value is a safe estimate with complete, partial, or unavailable coverage; provider-recorded native cost remains a separate fixed-point amount. Estimated telemetry and activity-only browser/desktop signals do not qualify for sessions.
 
 ## Pricing and value
 
-A pricing rule is versioned by provider, model pattern, effective date, input-context tier, and version. Calculations use uncached input, cached input, output, and an explicit reasoning behavior. If the model/rate/effective mapping is not safe, the event stays `pricing_status = unavailable` and aggregate API-equivalent value/value multiple is hidden. Actual subscription cost is never called API spend.
+A pricing rule is versioned by provider, model pattern, effective date, input-context tier, and version. `inputTokenSemantics` distinguishes providers whose cache counters are included in input from providers whose counters are additive. Calculations can price fresh input, cache reads, 5m writes, 1h writes, output, and an explicit reasoning behavior. Known components may produce a `partial` lower-bound subtotal while an unknown component remains unpriced. If no safe mapping exists, the event stays `pricing_status = unavailable`. Actual subscription cost is never called API spend.

@@ -45,6 +45,9 @@ impl SourceType {
 pub struct TokenCounts {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
     pub total_tokens: i64,
@@ -54,6 +57,13 @@ impl TokenCounts {
     pub fn normalize(mut self) -> Self {
         self.input_tokens = self.input_tokens.max(0);
         self.cached_input_tokens = self.cached_input_tokens.max(0);
+        self.cache_write_tokens = self.cache_write_tokens.max(0);
+        self.cache_write_5m_tokens = self.cache_write_5m_tokens.max(0);
+        self.cache_write_1h_tokens = self.cache_write_1h_tokens.max(0);
+        self.cache_write_tokens = self.cache_write_tokens.max(
+            self.cache_write_5m_tokens
+                .saturating_add(self.cache_write_1h_tokens),
+        );
         self.output_tokens = self.output_tokens.max(0);
         self.reasoning_tokens = self.reasoning_tokens.max(0);
         let derived = self.input_tokens.saturating_add(self.output_tokens);
@@ -62,6 +72,47 @@ impl TokenCounts {
         }
         self
     }
+}
+
+/// Compares cumulative request snapshots without treating a later write as
+/// authoritative merely because it was observed later. Usage completeness wins
+/// first, then newly available privacy-safe metadata, then provider timestamp.
+#[allow(clippy::too_many_arguments)]
+pub fn is_more_authoritative_snapshot(
+    incoming_tokens: &TokenCounts,
+    incoming_occurred_at: &DateTime<Utc>,
+    incoming_model: Option<&str>,
+    incoming_project_name: Option<&str>,
+    stored_tokens: &TokenCounts,
+    stored_occurred_at: &DateTime<Utc>,
+    stored_model: Option<&str>,
+    stored_project_name: Option<&str>,
+) -> bool {
+    let incoming_usage = (
+        incoming_tokens.total_tokens,
+        incoming_tokens
+            .cache_write_5m_tokens
+            .saturating_add(incoming_tokens.cache_write_1h_tokens),
+        incoming_tokens.output_tokens,
+    );
+    let stored_usage = (
+        stored_tokens.total_tokens,
+        stored_tokens
+            .cache_write_5m_tokens
+            .saturating_add(stored_tokens.cache_write_1h_tokens),
+        stored_tokens.output_tokens,
+    );
+    if incoming_usage != stored_usage {
+        return incoming_usage > stored_usage;
+    }
+
+    let incoming_metadata = (incoming_model.is_some(), incoming_project_name.is_some());
+    let stored_metadata = (stored_model.is_some(), stored_project_name.is_some());
+    if incoming_metadata != stored_metadata {
+        return incoming_metadata > stored_metadata;
+    }
+
+    incoming_occurred_at > stored_occurred_at
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +130,8 @@ pub struct UsageEvent {
     #[serde(flatten)]
     pub tokens: TokenCounts,
     pub estimated_api_value_usd_micros: Option<i64>,
+    /// Provider-recorded cost in exact 1e-10 USD ticks. This is not an ArcMeter estimate.
+    pub native_cost_usd_ticks: Option<i64>,
     pub pricing_status: String,
     pub measurement_kind: MeasurementKind,
     pub device_id: String,
@@ -110,15 +163,21 @@ impl UsageEvent {
             native_session_id,
             native_event_id,
             occurred_at,
-            model: clean_label(model),
+            model: model.as_deref().and_then(safe_identifier),
             project_name: clean_label(project_name).and_then(|value| sanitize_project_name(&value)),
             tokens: tokens.normalize(),
             estimated_api_value_usd_micros: None,
+            native_cost_usd_ticks: None,
             pricing_status: "unavailable".into(),
             measurement_kind: MeasurementKind::Measured,
             device_id: device_id.into(),
             created_at: Utc::now(),
         }
+    }
+
+    pub fn with_native_cost_usd_ticks(mut self, ticks: Option<i64>) -> Self {
+        self.native_cost_usd_ticks = ticks.filter(|value| *value >= 0);
+        self
     }
 
     pub fn activity(
@@ -147,6 +206,7 @@ impl UsageEvent {
             project_name: None,
             tokens: TokenCounts::default(),
             estimated_api_value_usd_micros: None,
+            native_cost_usd_ticks: None,
             pricing_status: "unavailable".into(),
             measurement_kind: MeasurementKind::ActivityOnly,
             device_id,
@@ -181,6 +241,22 @@ pub fn sanitize_project_name(raw: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+/// Metadata identifiers may include model namespaces/tags, never paths or URLs.
+/// Preserve accepted IDs exactly so event identity and replay state agree.
+pub(crate) fn safe_identifier(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 160
+        && !value.starts_with(['/', '.', '~'])
+        && !value.contains('\\')
+        && !value.contains(":/")
+        && !value.split('/').any(|part| part == "..")
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || "-_. /+@:".contains(c)))
+    .then(|| value.to_owned())
+}
+
 fn clean_label(value: Option<String>) -> Option<String> {
     value.and_then(|item| {
         let clean: String = item
@@ -202,10 +278,18 @@ pub struct CollectorDiagnostic {
     pub record_number: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventReconciliation {
+    pub legacy_event_id: String,
+    pub replacement_event_id: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectorOutput {
     pub events: Vec<UsageEvent>,
+    pub reconciliation_hints: Vec<EventReconciliation>,
     pub diagnostics: Vec<CollectorDiagnostic>,
     pub records_seen: usize,
     pub records_ignored: usize,
@@ -214,6 +298,48 @@ pub struct CollectorOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_metadata_rejects_paths_and_preserves_full_safe_identifiers() {
+        for raw in [
+            "/Users/private/Qwen",
+            r"C:\Users\private\Qwen",
+            " ~/models/Qwen ",
+            " ../Qwen ",
+            "org/../private",
+            "https://example.com/model",
+        ] {
+            let event = UsageEvent::measured(
+                "codex",
+                "codex_cli",
+                "session",
+                "turn",
+                Utc::now(),
+                Some(raw.into()),
+                None,
+                TokenCounts::default(),
+                "device",
+            );
+            assert_eq!(event.model, None);
+        }
+        for id in [
+            "org/Qwen-4bit:latest".to_owned(),
+            format!("org/{}", "m".repeat(156)),
+        ] {
+            let event = UsageEvent::measured(
+                "codex",
+                "codex_cli",
+                "session",
+                "turn",
+                Utc::now(),
+                Some(id.clone()),
+                None,
+                TokenCounts::default(),
+                "device",
+            );
+            assert_eq!(event.model.as_deref(), Some(id.as_str()));
+        }
+    }
 
     #[test]
     fn deterministic_id_is_stable_and_scoped() {
@@ -277,5 +403,53 @@ mod tests {
         assert_eq!(first.tokens, TokenCounts::default());
         assert_eq!(first.measurement_kind, MeasurementKind::ActivityOnly);
         assert_eq!(first.source_type, SourceType::Browser);
+    }
+
+    #[test]
+    fn cumulative_snapshot_authority_is_monotonic_and_detail_aware() {
+        let timestamp = "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let later = "2026-08-29T00:01:00Z".parse::<DateTime<Utc>>().unwrap();
+        let aggregate = TokenCounts {
+            cache_write_tokens: 100,
+            total_tokens: 120,
+            ..Default::default()
+        };
+        let detailed = TokenCounts {
+            cache_write_tokens: 100,
+            cache_write_5m_tokens: 60,
+            cache_write_1h_tokens: 40,
+            total_tokens: 120,
+            ..Default::default()
+        };
+        assert!(is_more_authoritative_snapshot(
+            &detailed, &timestamp, None, None, &aggregate, &timestamp, None, None,
+        ));
+        assert!(is_more_authoritative_snapshot(
+            &aggregate,
+            &timestamp,
+            Some("claude-sonnet-5"),
+            None,
+            &aggregate,
+            &timestamp,
+            None,
+            None,
+        ));
+        assert!(is_more_authoritative_snapshot(
+            &aggregate, &later, None, None, &aggregate, &timestamp, None, None,
+        ));
+        let smaller = TokenCounts {
+            total_tokens: 80,
+            ..Default::default()
+        };
+        assert!(!is_more_authoritative_snapshot(
+            &smaller,
+            &later,
+            Some("claude-sonnet-5"),
+            Some("Fixture"),
+            &aggregate,
+            &timestamp,
+            None,
+            None,
+        ));
     }
 }

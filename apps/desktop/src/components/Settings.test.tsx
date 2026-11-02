@@ -25,7 +25,7 @@ async function renderSettings() {
   const data: DashboardSnapshot = await getDashboard("month");
   const onSync = vi.fn(async () => { await syncCloudNow(); });
   const props = {
-    data, scanning: false, onScan: vi.fn(() => Promise.resolve()), onSync,
+    data, initialSection: "sync", scanning: false, onScan: vi.fn(() => Promise.resolve()), onSync,
     onSaveSubscription: vi.fn(() => Promise.resolve()), onRenameDevice: vi.fn(() => Promise.resolve(data.device)),
   };
   const view = render(<Settings {...props} />);
@@ -41,7 +41,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation((command) => {
     if (command === "dashboard_snapshot") return Promise.resolve({
-      generatedAt: "2026-11-02T00:00:00Z", range: "month", metrics: {}, trend: [], byProvider: [], byModel: [], byProject: [], byDevice: [], activity: [], insights: [], sources: [], subscriptions: [],
+      generatedAt: "2026-11-02T00:00:00Z", range: "month", metrics: {}, localModels: { runtimes: [], measuredTokensToday: 0, requestsToday: null, observationsToday: 0, historyStatus: "unavailable" }, trend: [], byProvider: [], byModel: [], byProject: [], byDevice: [], activity: [], insights: [], sources: [], subscriptions: [],
       device: { id: "test-device", friendlyName: "Test Mac", os: "macos", architecture: "aarch64", appVersion: "0.2.0", createdAt: "2026-11-02T00:00:00Z", lastSeenAt: "2026-11-02T00:00:00Z", lastSyncAt: null, syncStatus: "local_only" },
     });
     if (command === "auth_status") {

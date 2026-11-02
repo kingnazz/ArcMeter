@@ -3,13 +3,17 @@
 mod activity_tracking;
 mod analytics;
 mod auth;
+mod cache_efficiency;
 mod collectors;
 #[cfg(not(test))]
 mod commands;
 mod db;
 mod device;
 mod domain;
+mod local_models;
 mod pricing;
+mod quota;
+mod sessions;
 mod sync;
 
 #[cfg(not(test))]
@@ -25,7 +29,7 @@ use tauri::menu::{Menu, MenuItem};
 #[cfg(not(test))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 #[cfg(not(test))]
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 #[cfg(not(test))]
 use tauri_plugin_autostart::MacosLauncher;
 #[cfg(not(test))]
@@ -37,6 +41,7 @@ pub struct AppState {
     device_id: String,
     last_scan: Arc<Mutex<ScanReport>>,
     scan_lock: Arc<Mutex<()>>,
+    quota_runtime: Arc<quota::QuotaRuntime>,
 }
 
 #[cfg(not(test))]
@@ -46,13 +51,14 @@ struct TraySummary {
     claude: MenuItem<tauri::Wry>,
     grok: MenuItem<tauri::Wry>,
     gemini: MenuItem<tauri::Wry>,
+    local: MenuItem<tauri::Wry>,
     month: MenuItem<tauri::Wry>,
 }
 
 #[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -62,8 +68,10 @@ pub fn run() {
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             let database = Database::open(app_data.join("arcmeter.db"))?;
+            local_models::invalidate_live_state(&database)?;
             let device = database.ensure_device(app.package_info().version.to_string().as_str())?;
             database.ensure_default_subscriptions()?;
+            let _ = pricing::reprice_events(&database)?;
             let _ = activity_tracking::ensure_bridge_token(&database)?;
 
             app.manage(AppState {
@@ -71,6 +79,7 @@ pub fn run() {
                 device_id: device.id.clone(),
                 last_scan: Arc::new(Mutex::new(ScanReport::default())),
                 scan_lock: Arc::new(Mutex::new(())),
+                quota_runtime: Arc::new(quota::QuotaRuntime::default()),
             });
 
             build_tray(app)?;
@@ -97,6 +106,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 while let Some(state) = app_handle.try_state::<AppState>() {
                     let guard = state.scan_lock.lock().await;
+                    let _ = local_models::refresh(&state.database, &state.device_id).await;
                     let database = state.database.clone();
                     let device_id = state.device_id.clone();
                     if let Ok(Ok((report, today, month))) =
@@ -141,6 +151,23 @@ pub fn run() {
                     }
                 }
             });
+            let quota_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                while let Some(state) = quota_handle.try_state::<AppState>() {
+                    if quota::is_enabled(&state.database) {
+                        let result =
+                            quota::refresh_claude(&state.database, &state.quota_runtime).await;
+                        let _ = quota_handle.emit("arcmeter://quota-changed", result);
+                    }
+                    if quota::is_grok_enabled(&state.database) {
+                        let result =
+                            quota::refresh_grok(&state.database, &state.quota_runtime).await;
+                        let _ = quota_handle.emit("arcmeter://quota-changed", result);
+                    }
+                    tokio::time::sleep(quota::POLL_INTERVAL).await;
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -159,8 +186,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::dashboard_snapshot,
+            commands::configure_local_runtime,
+            commands::test_local_runtime,
+            commands::cache_efficiency,
             commands::scan_now,
             commands::activity_page,
+            commands::session_page,
+            commands::session_detail,
             commands::save_subscription,
             commands::rename_device,
             commands::get_setting,
@@ -170,9 +202,33 @@ pub fn run() {
             commands::auth_sign_in,
             commands::auth_sign_out,
             commands::sync_now,
+            commands::claude_quota_status,
+            commands::set_claude_quota_enabled,
+            commands::refresh_claude_quota,
+            commands::grok_quota_status,
+            commands::set_grok_quota_enabled,
+            commands::refresh_grok_quota,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ArcMeter");
+        .build(tauri::generate_context!())
+        .expect("error while building ArcMeter");
+    app.run(|handle, event| {
+        if matches!(event, RunEvent::Resumed) {
+            let handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let Some(state) = handle.try_state::<AppState>() else {
+                    return;
+                };
+                if quota::is_enabled(&state.database) {
+                    let result = quota::refresh_claude(&state.database, &state.quota_runtime).await;
+                    let _ = handle.emit("arcmeter://quota-changed", result);
+                }
+                if quota::is_grok_enabled(&state.database) {
+                    let result = quota::refresh_grok(&state.database, &state.quota_runtime).await;
+                    let _ = handle.emit("arcmeter://quota-changed", result);
+                }
+            });
+        }
+    });
 }
 
 #[cfg(not(test))]
@@ -188,6 +244,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let claude = MenuItem::with_id(app, "claude_summary", "Claude · —", false, None::<&str>)?;
     let grok = MenuItem::with_id(app, "grok_summary", "Grok · —", false, None::<&str>)?;
     let gemini = MenuItem::with_id(app, "gemini_summary", "Gemini · —", false, None::<&str>)?;
+    let local = MenuItem::with_id(
+        app,
+        "local_summary",
+        "Local · discovering runtimes…",
+        false,
+        None::<&str>,
+    )?;
     let month = MenuItem::with_id(
         app,
         "month_summary",
@@ -201,7 +264,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &today, &codex, &claude, &grok, &gemini, &month, &open, &sync, &quit,
+            &today, &codex, &claude, &grok, &gemini, &local, &month, &open, &sync, &quit,
         ],
     )?;
 
@@ -245,6 +308,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         claude,
         grok,
         gemini,
+        local,
         month,
     });
     Ok(())
@@ -271,7 +335,7 @@ fn update_tray_summary(
         return;
     };
     let _ = tray.today.set_text(format!(
-        "Today · {} measured tokens",
+        "Today · {} telemetry tokens (may overlap)",
         compact_tokens(today.metrics.measured_tokens_today)
     ));
     let _ = tray
@@ -284,8 +348,20 @@ fn update_tray_summary(
     let _ = tray
         .gemini
         .set_text(provider_summary(today, "gemini", "Gemini"));
+    let loaded = today
+        .local_models
+        .runtimes
+        .iter()
+        .filter(|r| r.enabled && r.status == "healthy")
+        .flat_map(|r| &r.models)
+        .filter(|m| m.loaded == Some(true))
+        .count();
+    let _ = tray.local.set_text(format!(
+        "Local runtime · {} tokens · {loaded} loaded",
+        compact_tokens(today.telemetry.runtime_tokens)
+    ));
     let _ = tray.month.set_text(format!(
-        "This month · {} measured tokens",
+        "This month · {} telemetry tokens (may overlap)",
         compact_tokens(month.metrics.measured_tokens_month)
     ));
 }

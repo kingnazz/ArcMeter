@@ -21,6 +21,61 @@ pub struct DashboardSnapshot {
     pub sources: Vec<SourceScanResult>,
     pub subscriptions: Vec<Subscription>,
     pub device: Device,
+    pub local_models: crate::local_models::LocalModelsSnapshot,
+    pub telemetry: TelemetrySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetrySummary {
+    pub runtime_tokens: i64,
+    pub tool_tokens: i64,
+    pub unclassified_tokens: i64,
+    pub runtime_observations: i64,
+    pub runtime_trend: Vec<TrendPoint>,
+}
+
+fn telemetry(connection: &Connection, start: DateTime<Utc>) -> Result<TelemetrySummary> {
+    // Classify the documented collector, not a provider/model name or presumed route.
+    // No current tool collector establishes whether inference was hosted or local.
+    let (runtime_tokens, tool_tokens, unclassified_tokens) = connection.query_row("WITH layers AS (
+        SELECT total_tokens, CASE
+          WHEN provider='omlx' AND source='omlx_usage_hourly' THEN 'runtime'
+          WHEN (provider='codex' AND source='codex_cli')
+            OR (provider='claude' AND source='claude_code')
+            OR (provider='gemini' AND source='gemini_cli')
+            OR (provider='grok' AND source='grok_build') THEN 'tool'
+          ELSE 'unknown' END AS layer
+        FROM usage_events WHERE measurement_kind='measured' AND superseded_by_event_id IS NULL AND occurred_at>=?1)
+        SELECT COALESCE(SUM(CASE WHEN layer='runtime' THEN total_tokens ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN layer='tool' THEN total_tokens ELSE 0 END),0),
+          COALESCE(SUM(CASE WHEN layer='unknown' THEN total_tokens ELSE 0 END),0) FROM layers",
+        [start.to_rfc3339()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    let runtime_observations = connection.query_row(
+        "SELECT COUNT(*) FROM local_runtime_observations WHERE observed_at>=?1",
+        [start.to_rfc3339()],
+        |r| r.get(0),
+    )?;
+    let mut statement = connection.prepare("SELECT substr(occurred_at,1,10) day, SUM(total_tokens) FROM usage_events
+        WHERE measurement_kind='measured' AND superseded_by_event_id IS NULL AND provider='omlx' AND source='omlx_usage_hourly'
+        AND occurred_at>=?1 GROUP BY day ORDER BY day")?;
+    let runtime_trend = statement
+        .query_map([start.to_rfc3339()], |r| {
+            let date: String = r.get(0)?;
+            Ok(TrendPoint {
+                label: date.get(5..).unwrap_or(&date).replace('-', "/"),
+                date,
+                tokens: r.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(TelemetrySummary {
+        runtime_tokens,
+        tool_tokens,
+        unclassified_tokens,
+        runtime_observations,
+        runtime_trend,
+    })
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -30,11 +85,12 @@ pub struct HeadlineMetrics {
     pub measured_tokens_month: i64,
     pub measured_tokens_range: i64,
     pub measured_events_range: i64,
+    pub priced_tokens_range: i64,
+    pub priced_events_range: i64,
     pub activity_minutes_range: i64,
     pub monthly_subscription_usd_cents: i64,
     pub estimated_api_value_usd_micros: Option<i64>,
     pub pricing_complete: bool,
-    pub value_multiple: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,8 +122,13 @@ pub struct ActivityItem {
     pub total_tokens: i64,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
+    pub native_cost_usd_ticks: Option<i64>,
+    pub estimated_api_value_usd_micros: Option<i64>,
     pub measurement_kind: String,
     pub device_id: String,
     pub device_name: String,
@@ -90,15 +151,21 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
     let month_start = local_month_start(now);
     let measured_tokens_today = sum_tokens(&connection, today_start)?;
     let measured_tokens_month = sum_tokens(&connection, month_start)?;
-    let (measured_events_range, measured_tokens_range, value_micros, missing_prices) = connection.query_row(
+    let (measured_events_range, measured_tokens_range, value_micros, priced_events_range,
+        priced_tokens_range, valued_events_range) = connection.query_row(
         "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_api_value_usd_micros), 0),
-                COALESCE(SUM(CASE WHEN pricing_status != 'available' THEN 1 ELSE 0 END), 0)
-         FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1",
+                COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN pricing_status = 'available' THEN total_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN pricing_status IN ('available', 'partial') THEN 1 ELSE 0 END), 0)
+         FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+           AND superseded_by_event_id IS NULL",
         [start.to_rfc3339()],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?)),
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?)),
     )?;
     let activity_minutes_range: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only' AND occurred_at >= ?1",
+        "SELECT COUNT(*) FROM usage_events WHERE measurement_kind = 'activity_only'
+           AND occurred_at >= ?1 AND superseded_by_event_id IS NULL",
         [start.to_rfc3339()],
         |row| row.get(0),
     )?;
@@ -108,12 +175,9 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         .filter(|subscription| subscription.active)
         .map(|subscription| subscription.monthly_price_usd_cents)
         .sum::<i64>();
-    let pricing_complete = measured_events_range > 0 && missing_prices == 0;
-    let estimated_api_value_usd_micros = pricing_complete.then_some(value_micros);
-    let value_multiple = estimated_api_value_usd_micros.and_then(|value| {
-        (monthly_subscription_usd_cents > 0)
-            .then_some(value as f64 / (monthly_subscription_usd_cents as f64 * 10_000.0))
-    });
+    let pricing_complete =
+        measured_events_range > 0 && priced_events_range == measured_events_range;
+    let estimated_api_value_usd_micros = (valued_events_range > 0).then_some(value_micros);
     let total = measured_tokens_range.max(1);
 
     Ok(DashboardSnapshot {
@@ -124,11 +188,12 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
             measured_tokens_month,
             measured_tokens_range,
             measured_events_range,
+            priced_tokens_range,
+            priced_events_range,
             activity_minutes_range,
             monthly_subscription_usd_cents,
             estimated_api_value_usd_micros,
             pricing_complete,
-            value_multiple,
         },
         trend: trend(&connection, start)?,
         by_provider: breakdown(&connection, "provider", start, total)?,
@@ -150,6 +215,8 @@ pub fn dashboard(database: &Database, range: &str, scan: &ScanReport) -> Result<
         sources: normalized_sources(scan),
         subscriptions,
         device: database.device()?,
+        local_models: crate::local_models::snapshot(database)?,
+        telemetry: telemetry(&connection, start)?,
     })
 }
 
@@ -187,7 +254,12 @@ fn normalized_sources(scan: &ScanReport) -> Vec<SourceScanResult> {
         records_seen: 0,
         records_inserted: 0,
         measured_records: 0,
+        measured_sessions: 0,
+        measured_turns: 0,
         measured_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        native_cost_usd_ticks: None,
         last_scan_at: Utc::now(),
         last_usage_at: None,
         status: "healthy".into(),
@@ -200,7 +272,8 @@ fn sum_tokens(connection: &Connection, start: DateTime<Utc>) -> Result<i64> {
     connection
         .query_row(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events
-             WHERE measurement_kind = 'measured' AND occurred_at >= ?1",
+             WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+               AND superseded_by_event_id IS NULL",
             [start.to_rfc3339()],
             |row| row.get(0),
         )
@@ -211,6 +284,7 @@ fn trend(connection: &Connection, start: DateTime<Utc>) -> Result<Vec<TrendPoint
     let mut statement = connection.prepare(
         "SELECT substr(occurred_at, 1, 10) AS day, COALESCE(SUM(total_tokens), 0)
          FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+           AND superseded_by_event_id IS NULL
          GROUP BY day ORDER BY day ASC",
     )?;
     let rows = statement.query_map([start.to_rfc3339()], |row| {
@@ -243,6 +317,7 @@ fn breakdown(
     let query = format!(
         "SELECT {column}, COALESCE(SUM(total_tokens), 0) AS tokens
          FROM usage_events WHERE measurement_kind = 'measured' AND occurred_at >= ?1
+           AND superseded_by_event_id IS NULL
          GROUP BY {column} ORDER BY tokens DESC LIMIT 8"
     );
     let mut statement = connection.prepare(&query)?;
@@ -269,6 +344,7 @@ fn breakdown_devices(
         "SELECT d.id, d.friendly_name, COALESCE(SUM(u.total_tokens), 0) AS tokens
          FROM usage_events u JOIN devices d ON d.id = u.device_id
          WHERE u.measurement_kind = 'measured' AND u.occurred_at >= ?1
+           AND u.superseded_by_event_id IS NULL
          GROUP BY d.id, d.friendly_name ORDER BY tokens DESC LIMIT 8",
     )?;
     let rows = statement.query_map([start.to_rfc3339()], |row| {
@@ -292,10 +368,17 @@ fn activity(
 ) -> Result<Vec<ActivityItem>> {
     let mut statement = connection.prepare(
         "SELECT u.id, u.provider, u.source, u.occurred_at, u.model, u.project_name, u.total_tokens,
-                u.input_tokens, u.cached_input_tokens, u.output_tokens, u.reasoning_tokens,
+                u.input_tokens, u.cached_input_tokens, u.cache_write_tokens,
+                u.cache_write_5m_tokens, u.cache_write_1h_tokens, u.output_tokens,
+                u.reasoning_tokens, u.native_cost_usd_ticks, u.estimated_api_value_usd_micros,
                 u.measurement_kind, u.device_id, d.friendly_name
          FROM usage_events u JOIN devices d ON d.id = u.device_id
-         WHERE u.occurred_at >= ?1 ORDER BY u.occurred_at DESC, u.id DESC LIMIT ?2 OFFSET ?3",
+         WHERE u.occurred_at >= ?1 AND u.superseded_by_event_id IS NULL
+         UNION ALL
+         SELECT o.id, o.provider, 'local_' || o.state, o.observed_at, o.model, NULL, 0,
+                0, 0, 0, 0, 0, 0, 0, NULL, NULL, 'runtime_status', o.device_id, d.friendly_name
+         FROM local_runtime_observations o JOIN devices d ON d.id=o.device_id WHERE o.observed_at>=?1
+         ORDER BY 4 DESC, 1 DESC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = statement.query_map(params![start.to_rfc3339(), limit, offset], |row| {
         let date: String = row.get(3)?;
@@ -318,11 +401,16 @@ fn activity(
             total_tokens: row.get(6)?,
             input_tokens: row.get(7)?,
             cached_input_tokens: row.get(8)?,
-            output_tokens: row.get(9)?,
-            reasoning_tokens: row.get(10)?,
-            measurement_kind: row.get(11)?,
-            device_id: row.get(12)?,
-            device_name: row.get(13)?,
+            cache_write_tokens: row.get(9)?,
+            cache_write_5m_tokens: row.get(10)?,
+            cache_write_1h_tokens: row.get(11)?,
+            output_tokens: row.get(12)?,
+            reasoning_tokens: row.get(13)?,
+            native_cost_usd_ticks: row.get(14)?,
+            estimated_api_value_usd_micros: row.get(15)?,
+            measurement_kind: row.get(16)?,
+            device_id: row.get(17)?,
+            device_name: row.get(18)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -345,9 +433,9 @@ fn insights(
     {
         output.push(Insight {
             id: "provider-share".into(),
-            title: format!("{} leads measured usage", top.label),
+            title: format!("{} leads recorded telemetry", top.label),
             detail: format!(
-                "{} represented {:.0}% of measured tokens in this period.",
+                "{} represented {:.0}% of recorded tokens in this period. Sources may overlap; this is not a share of unique inference.",
                 top.label, top.percentage
             ),
             tone: "provider".into(),
@@ -366,7 +454,7 @@ fn insights(
             id: "top-project".into(),
             title: format!("{} is the highest-usage project", top.label),
             detail: format!(
-                "It accounted for {:.0}% of measured usage in this period.",
+                "It accounted for {:.0}% of recorded tokens in this period; sources may overlap.",
                 top.percentage
             ),
             tone: "project".into(),
@@ -377,7 +465,8 @@ fn insights(
         let previous_start = start - period;
         let previous: i64 = connection.query_row(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events
-             WHERE measurement_kind = 'measured' AND occurred_at >= ?1 AND occurred_at < ?2",
+             WHERE measurement_kind = 'measured' AND occurred_at >= ?1 AND occurred_at < ?2
+               AND superseded_by_event_id IS NULL",
             params![previous_start.to_rfc3339(), start.to_rfc3339()],
             |row| row.get(0),
         )?;
@@ -391,7 +480,7 @@ fn insights(
                     "Usage eased".into()
                 },
                 detail: format!(
-                    "Measured tokens changed by {:+.0}% versus the previous comparable period.",
+                    "Recorded telemetry tokens changed by {:+.0}% versus the previous comparable period. Source coverage and overlap can affect this comparison.",
                     change
                 ),
                 tone: "trend".into(),
@@ -401,7 +490,7 @@ fn insights(
     Ok(output)
 }
 
-fn range_start(range: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+pub(crate) fn range_start(range: &str, now: DateTime<Utc>) -> DateTime<Utc> {
     match range {
         "today" => local_day_start(now),
         "7d" => local_day_start(now) - Duration::days(6),
@@ -438,6 +527,9 @@ fn provider_label(provider: &str) -> String {
         "claude" => "Claude Code CLI".into(),
         "grok" => "Grok Build".into(),
         "gemini" => "Gemini CLI".into(),
+        "omlx" => "oMLX".into(),
+        "ollama" => "Ollama".into(),
+        "lmstudio" => "LM Studio".into(),
         value => value.into(),
     }
 }
@@ -446,6 +538,61 @@ fn provider_label(provider: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::{SourceType, TokenCounts, UsageEvent};
+
+    #[test]
+    fn telemetry_layers_preserve_overlap_and_never_infer_tool_routing() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("layers.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let time = Utc::now();
+        for (provider, source) in [
+            ("codex", "codex_cli"),
+            ("claude", "claude_code"),
+            ("gemini", "gemini_cli"),
+            ("grok", "grok_build"),
+            ("omlx", "omlx_usage_hourly"),
+            ("omlx", "undocumented"),
+            ("unknown", "unknown"),
+        ] {
+            let event = UsageEvent::measured(
+                provider,
+                source,
+                "same-hour",
+                provider.to_owned() + source,
+                time,
+                Some("Qwen".into()),
+                None,
+                TokenCounts {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    total_tokens: 120,
+                    ..Default::default()
+                },
+                &device.id,
+            );
+            database.insert_usage_events(&[event]).unwrap();
+        }
+        let snapshot = dashboard(&database, "all", &Default::default()).unwrap();
+        assert_eq!(snapshot.telemetry.tool_tokens, 480);
+        assert_eq!(snapshot.telemetry.runtime_tokens, 120);
+        assert_eq!(snapshot.telemetry.unclassified_tokens, 240);
+        assert_eq!(snapshot.local_models.measured_tokens_today, 120);
+        assert_eq!(snapshot.metrics.measured_events_range, 7); // all source records retained
+        assert_eq!(snapshot.metrics.measured_tokens_range, 840); // telemetry, never unique inference
+        assert_eq!(
+            snapshot
+                .telemetry
+                .runtime_trend
+                .iter()
+                .map(|p| p.tokens)
+                .sum::<i64>(),
+            120
+        );
+        let serialized = serde_json::to_string(&snapshot.telemetry).unwrap();
+        assert!(!serialized.contains("cloud"));
+        assert!(!serialized.contains("hosted"));
+        assert!(!serialized.contains("percentage"));
+    }
 
     #[test]
     fn dashboard_aggregates_measured_value_subscription_and_device() {
@@ -469,6 +616,9 @@ mod tests {
             TokenCounts {
                 input_tokens: 1_000_000,
                 cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
                 output_tokens: 100_000,
                 reasoning_tokens: 20_000,
                 total_tokens: 1_100_000,
@@ -480,13 +630,14 @@ mod tests {
 
         let snapshot = dashboard(&database, "month", &ScanReport::default()).unwrap();
         assert_eq!(snapshot.metrics.measured_tokens_range, 1_100_000);
+        assert_eq!(snapshot.metrics.priced_tokens_range, 1_100_000);
+        assert_eq!(snapshot.metrics.priced_events_range, 1);
         assert_eq!(snapshot.metrics.monthly_subscription_usd_cents, 2_000);
         assert_eq!(
             snapshot.metrics.estimated_api_value_usd_micros,
             Some(11_000_000)
         );
         assert!(snapshot.metrics.pricing_complete);
-        assert_eq!(snapshot.metrics.value_multiple, Some(0.55));
         assert_eq!(snapshot.by_provider[0].key, "codex");
         assert_eq!(snapshot.by_project[0].label, "ArcMeter");
         assert_eq!(snapshot.by_device[0].key, device.id);
@@ -496,6 +647,75 @@ mod tests {
                 .iter()
                 .any(|item| item.id == "provider-share")
         );
+    }
+
+    #[test]
+    fn dashboard_keeps_safe_priced_subtotal_when_other_events_are_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("partial-pricing.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        database.ensure_default_subscriptions().unwrap();
+        let mut subscription = database.subscriptions().unwrap().remove(0);
+        subscription.active = true;
+        subscription.monthly_price_usd_cents = 2_000;
+        subscription.updated_at = Utc::now();
+        database.save_subscription(&subscription).unwrap();
+
+        let priced = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "priced-session",
+            "priced-turn",
+            Utc::now(),
+            Some("gpt-5.6-sol".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 1_000_000,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                output_tokens: 100_000,
+                reasoning_tokens: 20_000,
+                total_tokens: 1_100_000,
+            },
+            device.id.clone(),
+        );
+        let unavailable = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "review-session",
+            "review-turn",
+            Utc::now(),
+            Some("codex-auto-review".into()),
+            Some("ArcMeter".into()),
+            TokenCounts {
+                input_tokens: 100_000,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                output_tokens: 10_000,
+                reasoning_tokens: 2_000,
+                total_tokens: 110_000,
+            },
+            device.id,
+        );
+        database
+            .insert_usage_events(&[priced, unavailable])
+            .unwrap();
+        assert_eq!(crate::pricing::reprice_events(&database).unwrap(), 1);
+
+        let snapshot = dashboard(&database, "month", &ScanReport::default()).unwrap();
+        assert_eq!(snapshot.metrics.measured_events_range, 2);
+        assert_eq!(snapshot.metrics.priced_events_range, 1);
+        assert_eq!(snapshot.metrics.measured_tokens_range, 1_210_000);
+        assert_eq!(snapshot.metrics.priced_tokens_range, 1_100_000);
+        assert_eq!(
+            snapshot.metrics.estimated_api_value_usd_micros,
+            Some(11_000_000)
+        );
+        assert!(!snapshot.metrics.pricing_complete);
     }
 
     #[test]
@@ -530,7 +750,9 @@ mod tests {
         let snapshot = dashboard(&database, "today", &ScanReport::default()).unwrap();
         assert_eq!(snapshot.metrics.activity_minutes_range, 1);
         assert_eq!(snapshot.metrics.measured_events_range, 0);
+        assert_eq!(snapshot.metrics.priced_events_range, 0);
         assert_eq!(snapshot.metrics.measured_tokens_range, 0);
+        assert_eq!(snapshot.metrics.priced_tokens_range, 0);
         assert_eq!(snapshot.metrics.estimated_api_value_usd_micros, None);
     }
 }

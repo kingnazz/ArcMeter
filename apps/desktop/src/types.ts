@@ -1,16 +1,55 @@
 export type RangeKey = "today" | "7d" | "30d" | "month" | "all";
-export type NavKey = "overview" | "activity" | "insights" | "settings";
+export type NavKey = "overview" | "activity" | "sessions" | "local-models" | "insights" | "settings";
+
+export interface LocalModel {
+  id: string;
+  name: string;
+  loaded: boolean | null;
+  contextLength: number | null;
+  quantization: string | null;
+  parameters: string | null;
+  sizeBytes: number | null;
+  firstSeen: string;
+  lastSeen: string;
+  lastActivityAt: string | null;
+}
+export interface LocalRuntime {
+  provider: string;
+  enabled: boolean;
+  endpoint: string;
+  automatic: boolean;
+  status: string;
+  checkedAt: string | null;
+  detectedAt: string | null;
+  diagnostic: string;
+  models: LocalModel[];
+}
+export interface LocalModelsSnapshot {
+  runtimes: LocalRuntime[];
+  measuredTokensToday: number;
+  requestsToday: number | null;
+  observationsToday: number;
+  historyStatus: string;
+}
+export interface TelemetrySummary {
+  runtimeTokens: number;
+  toolTokens: number;
+  unclassifiedTokens: number;
+  runtimeObservations: number;
+  runtimeTrend: TrendPoint[];
+}
 
 export interface HeadlineMetrics {
   measuredTokensToday: number;
   measuredTokensMonth: number;
   measuredTokensRange: number;
   measuredEventsRange: number;
+  pricedTokensRange: number;
+  pricedEventsRange: number;
   activityMinutesRange: number;
   monthlySubscriptionUsdCents: number;
   estimatedApiValueUsdMicros: number | null;
   pricingComplete: boolean;
-  valueMultiple: number | null;
 }
 
 export interface TrendPoint {
@@ -36,9 +75,14 @@ export interface ActivityItem {
   totalTokens: number;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
   outputTokens: number;
   reasoningTokens: number;
-  measurementKind: "measured" | "estimated" | "activity_only";
+  nativeCostUsdTicks: number | null;
+  estimatedApiValueUsdMicros: number | null;
+  measurementKind: "measured" | "estimated" | "activity_only" | "runtime_status";
   deviceId: string;
   deviceName: string;
 }
@@ -65,7 +109,12 @@ export interface SourceScanResult {
   recordsSeen: number;
   recordsInserted: number;
   measuredRecords: number;
+  measuredSessions: number;
+  measuredTurns: number;
   measuredTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  nativeCostUsdTicks: number | null;
   lastScanAt: string;
   lastUsageAt: string | null;
   status: "healthy" | "warning" | "error";
@@ -95,6 +144,8 @@ export interface Device {
 }
 
 export interface DashboardSnapshot {
+  localModels: LocalModelsSnapshot;
+  telemetry: TelemetrySummary;
   generatedAt: string;
   range: RangeKey;
   metrics: HeadlineMetrics;
@@ -127,7 +178,193 @@ export interface SyncReport {
   downloadedEvents: number;
   downloadedDevices: number;
   syncedSubscriptions: number;
+  uploadedQuotaSnapshots: number;
+  downloadedQuotaSnapshots: number;
   completedAt: string;
+}
+
+export type CacheRange = "today" | "7d" | "30d" | "all";
+export type CacheCoverage = "complete" | "partial" | "unavailable";
+
+export interface CacheEfficiencySummary {
+  semanticCoverage: CacheCoverage;
+  freshInputTokens: number | null;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  cacheWriteUnspecifiedTokens: number;
+  normalizedInputContextTokens: number | null;
+  reuseShareBps: number | null;
+  apiEquivalentCacheImpactUsdMicros: number | null;
+  cachePricingCoverage: CacheCoverage;
+  measuredEventCount: number;
+}
+
+export interface CacheEfficiencyBreakdown extends CacheEfficiencySummary {
+  key: string;
+  label: string;
+  provider: string | null;
+  source: string | null;
+  model: string | null;
+  project: string | null;
+}
+
+export interface CacheEfficiencyReport {
+  range: CacheRange;
+  providerFilter: string | null;
+  availableProviders: string[];
+  summary: CacheEfficiencySummary;
+  byProvider: CacheEfficiencyBreakdown[];
+  byModel: CacheEfficiencyBreakdown[];
+  byProject: CacheEfficiencyBreakdown[];
+}
+
+export type SessionPricingCoverage = "complete" | "partial" | "unavailable";
+
+export interface SessionSummary {
+  sessionKey: string;
+  provider: string;
+  source: string;
+  nativeSessionId: string;
+  projectName: string;
+  startedAt: string;
+  lastActivityAt: string;
+  durationSeconds: number;
+  eventCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  estimatedApiValueUsdMicros: number | null;
+  nativeCostUsdTicks: number | null;
+  pricingCoverage: SessionPricingCoverage;
+  primaryModel: string;
+  modelCount: number;
+  deviceCount: number;
+  primaryDeviceName: string;
+}
+
+export interface SessionStats {
+  sessionCount: number;
+  totalTokens: number;
+  estimatedApiValueUsdMicros: number | null;
+}
+
+export interface SessionPage {
+  sessions: SessionSummary[];
+  totalCount: number;
+  stats: SessionStats;
+  hasMore: boolean;
+}
+
+export interface SessionModel {
+  model: string;
+  tokens: number;
+  eventCount: number;
+}
+
+export interface SessionTimelineItem {
+  occurredAt: string;
+  model: string;
+  totalTokens: number;
+  estimatedApiValueUsdMicros: number | null;
+}
+
+export interface SessionDetail {
+  session: SessionSummary;
+  cache: CacheEfficiencySummary;
+  models: SessionModel[];
+  devices: string[];
+  events: SessionTimelineItem[];
+  eventsHasMore: boolean;
+}
+
+export interface SessionQuery {
+  range: "today" | "7d" | "30d" | "all";
+  provider?: string;
+  search?: string;
+  sort?: "recent" | "tokens" | "value" | "duration";
+  limit?: number;
+  offset?: number;
+}
+
+export type QuotaHealth =
+  | "not_configured"
+  | "credential_unavailable"
+  | "permission_denied"
+  | "expired_login"
+  | "forbidden"
+  | "rate_limited"
+  | "provider_unavailable"
+  | "offline"
+  | "invalid_response"
+  | "healthy";
+
+export interface ProviderQuotaWindow {
+  key: string;
+  label: string;
+  kind: "rolling" | "weekly" | "monthly" | "model_weekly" | "product" | "other";
+  scope: string | null;
+  utilizationBps: number;
+  periodStartsAt: string | null;
+  resetsAt: string | null;
+}
+
+export type QuotaAnalysisConfidence = "insufficient" | "low" | "medium" | "high";
+export type QuotaAnalysisStatus = "gathering" | "no_recent_change" | "active" | "limit_reached" | "informational" | "stale";
+
+export interface QuotaWindowAnalysis {
+  provider: string;
+  windowKey: string;
+  label: string;
+  kind: ProviderQuotaWindow["kind"];
+  capBearing: boolean;
+  utilizationBps: number;
+  remainingBps: number;
+  periodStartsAt: string | null;
+  resetsAt: string | null;
+  observedAt: string;
+  recentBurnBpsPerHour: number | null;
+  periodAverageBurnBpsPerHour: number | null;
+  projectedExhaustionAt: string | null;
+  projectedBeforeReset: boolean | null;
+  sampleCount: number;
+  observationSpanSeconds: number;
+  confidence: QuotaAnalysisConfidence;
+  status: QuotaAnalysisStatus;
+  stale: boolean;
+}
+
+export interface ExtraUsage {
+  enabled: boolean;
+  monthlyLimitMinor: number | null;
+  usedCreditsMinor: number | null;
+  prepaidBalanceMinor: number | null;
+  utilizationBps: number | null;
+  currency: string | null;
+}
+
+export interface ProviderQuotaState {
+  provider: string;
+  enabled: boolean;
+  status: QuotaHealth;
+  message: string;
+  stale: boolean;
+  windows: ProviderQuotaWindow[];
+  analyses: QuotaWindowAnalysis[];
+  extraUsage: ExtraUsage | null;
+  planLabel: string | null;
+  source: "claude_code" | "grok_cli" | "grok_web" | "cloud_sync";
+  observedAt: string | null;
+  attemptedAt: string | null;
+  retryAt: string | null;
+  sourceDeviceId: string | null;
+  sourceDeviceName: string | null;
 }
 
 export interface ActivityTrackingStatus {

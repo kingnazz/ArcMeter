@@ -2,7 +2,13 @@
 
 ArcMeter is a local-first desktop application that measures AI coding-tool usage across a user's computers. It reads authoritative local telemetry from supported CLIs, normalizes token metadata into SQLite, and can synchronize that metadata through a user-owned Supabase account. Prompts, responses, source code, commands, uploaded files, secrets, environment variables, and absolute paths are outside the sync boundary.
 
-V1 supports native token collectors for OpenAI Codex, Claude Code CLI, Grok Build, and Gemini CLI. Claude Code CLI telemetry does not include the Claude Desktop app. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product UI contains only Overview, Activity, Insights, and Settings.
+ArcMeter supports native token collectors for OpenAI Codex, Claude Code CLI, Grok Build, and Gemini CLI. Claude Code CLI telemetry does not include the Claude Desktop app. Optional activity-only tracking counts foreground minutes for Claude Desktop on macOS and active-tab minutes for grok.com through the bundled browser extension. Activity-only data is kept separate from measured token totals and API-equivalent value. The product views are Overview, Activity, Sessions, Local Models, Insights, and Settings.
+
+Local Models adds passive oMLX, Ollama and LM Studio discovery, loaded-model status,
+configurable loopback endpoints and runtime observations. oMLX's dedicated hourly
+usage database can also supply authoritative token/request counts. Unsupported
+usage remains unavailable; loaded state never implies token usage. See
+[Local Models coverage, privacy and limitations](docs/LOCAL_MODELS.md).
 
 ## Stack
 
@@ -21,7 +27,7 @@ All JavaScript package versions are exact-pinned and both `pnpm-lock.yaml` and `
 
 ```text
 apps/desktop/                 React renderer and Tauri application
-  src/                        Four product views and design system
+  src/                        Six product views and design system
   src-tauri/                  Trusted Rust layer
     migrations/               Local SQLite schema
     src/collectors/           Native read-only collectors
@@ -92,12 +98,14 @@ Email/password authentication is used for V1 to avoid fragile native magic-link 
 
 Collectors discover standard cross-platform locations and supported environment overrides. Files are read-only. Unchanged files are skipped using local collector state; a changed file is safely replayed so parser context is reconstructed, while deterministic database identities prevent duplicates.
 
-Codex V1 uses the observed native JSONL structure:
+Codex V2 uses the observed native JSONL structure:
 
 - session identity from `session_meta.payload.session_id` or `id`
 - event identity from the top-level `ordinal`
 - model and sanitized project basename from `turn_context`
 - authoritative per-call counters from `event_msg/token_count.payload.info.last_token_usage`
+- aggregate cache writes from `last_token_usage.cache_write_input_tokens` (with a
+  camelCase compatibility form); Codex cache writes have no inferred TTL
 
 The fallback fingerprint is SHA-256 over the smallest reliable identity tuple. A collision is handled as the same event and logged through collector diagnostics; no totals are incremented.
 
@@ -108,7 +116,7 @@ Collection runs immediately at startup and every 60 seconds while ArcMeter remai
 Claude Desktop and the consumer Grok web app do not expose authoritative local token counts, so ArcMeter never estimates tokens for them. Their opt-in collectors create one deterministic `activity_only` event per sampled UTC minute:
 
 - On macOS, Claude Desktop is counted only while its bundle is frontmost. ArcMeter reads the bundle identifier, not a window title or conversation.
-- For grok.com, load `extensions/arcmeter-browser-activity` as an unpacked Chrome-compatible extension and pair it with the token in **Settings → Activity tracking**. The extension checks the active domain locally and sends only `grok_web` plus the current minute to ArcMeter over `127.0.0.1`.
+- For grok.com, load `extensions/arcmeter-browser-activity` as an unpacked Chrome-compatible extension and pair it with the token in **Settings → Collection → Activity tracking**. The extension checks the active domain locally and sends only `grok_web` plus the current minute to ArcMeter over `127.0.0.1`.
 
 Repeated samples in the same minute resolve to the same deterministic event ID. Activity-only rows sync through the existing authenticated, owner-scoped usage ledger but never contribute to measured tokens or API-equivalent value.
 

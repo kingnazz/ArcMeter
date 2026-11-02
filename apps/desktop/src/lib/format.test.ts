@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { formatTokens, formatUsdCents, formatUsdMicros, providerLabel } from "./format";
+import { formatProjectedDuration, formatQuotaPace, formatQuotaPercent, formatQuotaReset, formatTokens, formatUsdCents, formatUsdMicros, providerLabel, telemetryLayer } from "./format";
 
 describe("formatting", () => {
+  it("classifies the telemetry source without inferring a tool's route", () => {
+    for (const [provider, source] of [["codex","codex_cli"],["claude","claude_code"],["gemini","gemini_cli"],["grok","grok_build"]]) {
+      expect(telemetryLayer({provider:provider!,source:source!})).toBe("tool");
+    }
+    expect(telemetryLayer({provider:"omlx",source:"omlx_usage_hourly"})).toBe("runtime");
+    expect(telemetryLayer({provider:"omlx",source:"undocumented"})).toBe("unknown");
+    expect(telemetryLayer({provider:"hosted-looking-name",source:"unknown"})).toBe("unknown");
+  });
   it("keeps tokens and currency semantically distinct", () => {
     expect(formatTokens(31_800_000)).toBe("31.8M");
     expect(formatUsdCents(10_000)).toBe("$100");
     expect(formatUsdMicros(1_486_000_000)).toBe("$1,486");
+  });
+
+  it("preserves quota precision and chooses countdown versus local date", () => {
+    expect(formatQuotaPercent(4_763)).toBe("47.63%");
+    expect(formatQuotaPercent(4_760)).toBe("47.6%");
+    expect(formatQuotaReset("2026-08-31T14:14:00Z", Date.parse("2026-08-31T12:00:00Z"))).toBe("Resets in 2h 14m");
+    expect(formatQuotaReset(null)).toBe("Reset time unavailable");
+  });
+
+  it("formats native quota pace and projected duration without token inference", () => {
+    expect(formatQuotaPace(840)).toBe("+8.4 pts/hr");
+    expect(formatQuotaPace(3_100)).toBe("+31 pts/hr");
+    expect(formatProjectedDuration("2026-08-31T16:23:00Z", Date.parse("2026-08-31T12:00:00Z"))).toBe("4h 23m");
   });
 
   it("does not invent unavailable monetary value", () => {

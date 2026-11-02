@@ -9,6 +9,13 @@ const currency = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+const preciseCurrency = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
 export function formatTokens(value: number): string {
   if (!Number.isFinite(value)) return "—";
   return compactNumber.format(Math.max(0, value)).replace("B", "B").replace("M", "M");
@@ -26,6 +33,9 @@ export function formatMinutes(value: number): string {
 }
 
 export function activitySourceLabel(source: string, provider: string): string {
+  const runtimeStates: Record<string, string> = { local_server_online: "Server detected", local_server_unavailable: "Server unavailable", local_model_loaded: "Model loaded", local_model_unloaded: "Model unloaded" };
+  if (runtimeStates[source]) return `${providerLabel(provider)} · ${runtimeStates[source]}`;
+  if (source === "omlx_usage_hourly") return "oMLX · hourly usage";
   if (source === "claude_desktop") return "Claude Desktop";
   if (source === "grok_web") return "Grok web";
   return providerLabel(provider);
@@ -40,6 +50,11 @@ export function formatUsdMicros(value: number | null): string {
   return currency.format(value / 1_000_000);
 }
 
+export function formatUsdTicks(value: number | null): string {
+  if (value === null) return "Unavailable";
+  return preciseCurrency.format(value / 10_000_000_000);
+}
+
 export function formatRelativeTime(value: string | null): string {
   if (!value) return "Never";
   const deltaSeconds = Math.round((Date.now() - new Date(value).getTime()) / 1000);
@@ -48,6 +63,48 @@ export function formatRelativeTime(value: string | null): string {
   if (Math.abs(deltaSeconds) < 3_600) return formatter.format(-Math.round(deltaSeconds / 60), "minute");
   if (Math.abs(deltaSeconds) < 86_400) return formatter.format(-Math.round(deltaSeconds / 3_600), "hour");
   return formatter.format(-Math.round(deltaSeconds / 86_400), "day");
+}
+
+export function formatQuotaPercent(basisPoints: number): string {
+  const percent = Math.min(10_000, Math.max(0, basisPoints)) / 100;
+  return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(2).replace(/0$/, "")}%`;
+}
+
+export function formatQuotaReset(value: string | null, now = Date.now()): string {
+  if (!value) return "Reset time unavailable";
+  const reset = new Date(value);
+  const remaining = reset.getTime() - now;
+  if (!Number.isFinite(reset.getTime())) return "Reset time unavailable";
+  if (remaining <= 0) return "Reset pending";
+  if (remaining <= 24 * 60 * 60 * 1000) {
+    const totalMinutes = Math.max(1, Math.ceil(remaining / 60_000));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return hours > 0 ? `Resets in ${hours}h ${minutes}m` : `Resets in ${minutes}m`;
+  }
+  return `Resets ${new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(reset)}`;
+}
+
+export function formatQuotaPace(basisPointsPerHour: number): string {
+  const points = Math.max(0, basisPointsPerHour) / 100;
+  const value = points >= 10 ? points.toFixed(0) : points.toFixed(1).replace(/\.0$/, "");
+  return `+${value} pts/hr`;
+}
+
+export function formatProjectedDuration(value: string, now = Date.now()): string {
+  const milliseconds = new Date(value).getTime() - now;
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "now";
+  const totalMinutes = Math.max(1, Math.round(milliseconds / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+export function formatMinorCurrency(value: number | null, code: string | null): string {
+  if (value === null) return "Unavailable";
+  const currencyCode = code && /^[A-Z]{3}$/.test(code) ? code : "USD";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: currencyCode }).format(value / 100);
 }
 
 export function formatActivityTime(value: string): string {
@@ -64,12 +121,28 @@ export function formatActivityDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: date.getFullYear() === today.getFullYear() ? undefined : "numeric" }).format(date);
 }
 
+export function formatSessionDuration(seconds: number): string {
+  const minutes = Math.floor(Math.max(0, seconds) / 60);
+  if (minutes < 1) return "<1m";
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return hours === 0 ? `${minutes}m` : remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
+}
+
+export function formatUsdMicrosPrecise(value: number | null): string {
+  if (value === null) return "Pricing unavailable";
+  return preciseCurrency.format(value / 1_000_000);
+}
+
 export function providerLabel(provider: string): string {
   const labels: Record<string, string> = {
     codex: "Codex",
     claude: "Claude Code CLI",
     grok: "Grok Build",
     gemini: "Gemini CLI",
+    omlx: "oMLX",
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
     openai: "ChatGPT Personal",
     openai_business: "ChatGPT Business",
     anthropic: "Claude",
@@ -77,4 +150,16 @@ export function providerLabel(provider: string): string {
     google: "Google AI / Gemini",
   };
   return labels[provider] ?? provider;
+}
+
+export function isLocalProvider(provider: string): boolean { return ["omlx", "ollama", "lmstudio"].includes(provider); }
+// A tool/model name cannot prove inference location. Match known collectors only.
+export function telemetryLayer(item: { provider: string; source: string; measurementKind?: string }): "runtime" | "tool" | "unknown" {
+  if ((item.provider === "omlx" && item.source === "omlx_usage_hourly") ||
+      (isLocalProvider(item.provider) && item.source.startsWith("local_"))) return "runtime";
+  const toolSources: Record<string, string> = { codex: "codex_cli", claude: "claude_code", gemini: "gemini_cli", grok: "grok_build" };
+  if (item.measurementKind === "activity_only" &&
+      ((item.provider === "claude" && item.source === "claude_desktop") ||
+       (item.provider === "grok" && item.source === "grok_web"))) return "tool";
+  return toolSources[item.provider] === item.source ? "tool" : "unknown";
 }

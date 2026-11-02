@@ -42,7 +42,7 @@ In **Settings → AI sources**, run **Scan now** and inspect every collector. Th
 
 - Codex: `~/.codex/sessions` and `~/.codex/archived_sessions`
 - Claude Code CLI: `~/.claude/projects` (does not include Claude Desktop)
-- Grok Build: `~/.grok`
+- Grok Build: `~/.grok/sessions/*/*/updates.jsonl` (or `$GROK_HOME/sessions/*/*/updates.jsonl`)
 - Gemini CLI: `~/.gemini`
 
 `Not detected` means the standard root or supported JSON/JSONL telemetry is absent. A warning means a source exists but at least one record did not match the V1 parser. A permission error is distinct and should name the affected collector without exposing a full source path. ArcMeter only needs read access to these local telemetry directories; do not grant broader macOS permissions unless the collector reports an actual denial.

@@ -1,5 +1,6 @@
+import { errorPreview, loadingPreview, samplePreview } from "./preview";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ActivityTrackingStatus, AuthStatus, DashboardSnapshot, Device, RangeKey, ScanReport, Subscription, SyncReport } from "../types";
+import type { ActivityTrackingStatus, AuthStatus, CacheEfficiencyReport, CacheRange, DashboardSnapshot, Device, ProviderQuotaState, RangeKey, ScanReport, SessionDetail, SessionPage, SessionQuery, Subscription, SyncReport } from "../types";
 
 const previewNow = new Date().toISOString();
 const unavailableDevice: Device = {
@@ -7,7 +8,7 @@ const unavailableDevice: Device = {
   friendlyName: "Local preview",
   os: "unknown",
   architecture: "unknown",
-  appVersion: "0.2.0",
+  appVersion: "0.5.1",
   createdAt: previewNow,
   lastSeenAt: previewNow,
   lastSyncAt: null,
@@ -16,6 +17,14 @@ const unavailableDevice: Device = {
 
 function emptySnapshot(range: RangeKey): DashboardSnapshot {
   return {
+    localModels: {
+      runtimes: [ ["omlx", 8000], ["ollama", 11434], ["lmstudio", 1234] ].map(([provider, port]) => ({
+        provider: String(provider), endpoint: `http://127.0.0.1:${port}${provider === "omlx" ? "/v1" : ""}`,
+        enabled: true, automatic: true, status: "not_detected", checkedAt: null, detectedAt: null,
+        diagnostic: "Open the desktop app to discover local runtimes", models: [],
+      })), measuredTokensToday: 0, requestsToday: null, observationsToday: 0, historyStatus: "not_checked",
+    },
+    telemetry: { runtimeTokens: 0, toolTokens: 0, unclassifiedTokens:0,runtimeObservations: 0, runtimeTrend: [] },
     generatedAt: new Date().toISOString(),
     range,
     metrics: {
@@ -23,11 +32,12 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
       measuredTokensMonth: 0,
       measuredTokensRange: 0,
       measuredEventsRange: 0,
+      pricedTokensRange: 0,
+      pricedEventsRange: 0,
       activityMinutesRange: 0,
       monthlySubscriptionUsdCents: 0,
       estimatedApiValueUsdMicros: null,
       pricingComplete: false,
-      valueMultiple: null,
     },
     trend: [],
     byProvider: [],
@@ -44,7 +54,12 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
       recordsSeen: 0,
       recordsInserted: 0,
       measuredRecords: 0,
+      measuredSessions: 0,
+      measuredTurns: 0,
       measuredTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      nativeCostUsdTicks: null,
       lastScanAt: new Date().toISOString(),
       lastUsageAt: null,
       status: "healthy" as const,
@@ -55,7 +70,20 @@ function emptySnapshot(range: RangeKey): DashboardSnapshot {
   };
 }
 
+export async function configureLocalRuntime(provider: string, enabled: boolean, endpoint: string | null): Promise<void> {
+  if (!isTauri()) throw new Error("Local runtime settings are available in the desktop app.");
+  return invoke("configure_local_runtime", { provider, enabled, endpoint });
+}
+
+export async function testLocalRuntime(provider: string, endpoint: string): Promise<string> {
+  if (!isTauri()) throw new Error("Open the desktop app to test a local connection.");
+  return invoke<string>("test_local_runtime", { provider, endpoint });
+}
+
 export async function getDashboard(range: RangeKey): Promise<DashboardSnapshot> {
+  if (import.meta.env.DEV && errorPreview) throw new Error("Visual QA: the local ledger could not be read. Retry after the source becomes available.");
+  if (import.meta.env.DEV && loadingPreview) return new Promise<DashboardSnapshot>(() => {});
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).dashboard(range);
   if (!isTauri()) return emptySnapshot(range);
   return invoke<DashboardSnapshot>("dashboard_snapshot", { range });
 }
@@ -81,7 +109,7 @@ export async function renameDevice(name: string): Promise<Device> {
 }
 
 export async function getSetting(key: string): Promise<string | null> {
-  if (!isTauri()) return null;
+  if (!isTauri()) return samplePreview && key === "theme" ? "dark" : null;
   return invoke<string | null>("get_setting", { key });
 }
 
@@ -137,4 +165,98 @@ export async function syncCloudNow(): Promise<SyncReport> {
     }
     throw reason;
   }
+}
+
+export async function getCacheEfficiency(range: CacheRange, provider?: string): Promise<CacheEfficiencyReport> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).cacheReport(range, provider);
+  if (!isTauri()) return {
+    range,
+    providerFilter: provider ?? null,
+    availableProviders: [],
+    summary: {
+      semanticCoverage: "unavailable",
+      freshInputTokens: null,
+      cachedInputTokens: 0,
+      cacheWriteTokens: 0,
+      cacheWrite5mTokens: 0,
+      cacheWrite1hTokens: 0,
+      cacheWriteUnspecifiedTokens: 0,
+      normalizedInputContextTokens: null,
+      reuseShareBps: null,
+      apiEquivalentCacheImpactUsdMicros: null,
+      cachePricingCoverage: "unavailable",
+      measuredEventCount: 0,
+    },
+    byProvider: [],
+    byModel: [],
+    byProject: [],
+  };
+  return invoke<CacheEfficiencyReport>("cache_efficiency", { range, provider });
+}
+
+export async function getSessionPage(query: SessionQuery): Promise<SessionPage> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).sessionPage(query);
+  if (!isTauri()) return { sessions: [], totalCount: 0, stats: { sessionCount: 0, totalTokens: 0, estimatedApiValueUsdMicros: null }, hasMore: false };
+  return invoke<SessionPage>("session_page", { query });
+}
+
+export async function getSessionDetail(session: Pick<SessionDetail["session"], "provider" | "source" | "nativeSessionId">, limit = 100, offset = 0): Promise<SessionDetail> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).sessionDetail(session);
+  return invoke<SessionDetail>("session_detail", { provider: session.provider, source: session.source, nativeSessionId: session.nativeSessionId, limit, offset });
+}
+
+const previewQuota: ProviderQuotaState = {
+  provider: "claude",
+  enabled: false,
+  status: "not_configured",
+  message: "Claude live limits are off.",
+  stale: false,
+  windows: [],
+  analyses: [],
+  extraUsage: null,
+  planLabel: null,
+  source: "claude_code",
+  observedAt: null,
+  attemptedAt: null,
+  retryAt: null,
+  sourceDeviceId: null,
+  sourceDeviceName: null,
+};
+
+export async function getClaudeQuotaStatus(): Promise<ProviderQuotaState> {
+  if (import.meta.env.DEV && samplePreview) return (await import("../dev/fixtures")).quota();
+  if (!isTauri()) return previewQuota;
+  return invoke<ProviderQuotaState>("claude_quota_status");
+}
+
+export async function setClaudeQuotaEnabled(enabled: boolean): Promise<ProviderQuotaState> {
+  if (!isTauri()) return { ...previewQuota, enabled, status: enabled ? "credential_unavailable" : "not_configured" };
+  return invoke<ProviderQuotaState>("set_claude_quota_enabled", { enabled });
+}
+
+export async function refreshClaudeQuota(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewQuota;
+  return invoke<ProviderQuotaState>("refresh_claude_quota");
+}
+
+const previewGrokQuota: ProviderQuotaState = {
+  ...previewQuota,
+  provider: "grok",
+  message: "Grok live limits are off.",
+  source: "grok_cli",
+};
+
+export async function getGrokQuotaStatus(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewGrokQuota;
+  return invoke<ProviderQuotaState>("grok_quota_status");
+}
+
+export async function setGrokQuotaEnabled(enabled: boolean): Promise<ProviderQuotaState> {
+  if (!isTauri()) return { ...previewGrokQuota, enabled, status: enabled ? "credential_unavailable" : "not_configured" };
+  return invoke<ProviderQuotaState>("set_grok_quota_enabled", { enabled });
+}
+
+export async function refreshGrokQuota(): Promise<ProviderQuotaState> {
+  if (!isTauri()) return previewGrokQuota;
+  return invoke<ProviderQuotaState>("refresh_grok_quota");
 }

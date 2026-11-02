@@ -1,5 +1,6 @@
 use crate::auth::{self, SupabaseConfig};
 use crate::db::Database;
+use crate::quota;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, Response};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -52,6 +53,8 @@ pub struct SyncReport {
     pub downloaded_events: usize,
     pub downloaded_devices: usize,
     pub synced_subscriptions: usize,
+    pub uploaded_quota_snapshots: usize,
+    pub downloaded_quota_snapshots: usize,
     pub completed_at: DateTime<Utc>,
 }
 
@@ -64,13 +67,15 @@ pub async fn sync_now(database: &Database) -> Result<SyncReport, SyncError> {
         downloaded_events: 0,
         downloaded_devices: 0,
         synced_subscriptions: 0,
+        uploaded_quota_snapshots: 0,
+        downloaded_quota_snapshots: 0,
         completed_at: Utc::now(),
     };
 
     // Bound the pull with a cursor captured before the request. Advancing to the
     // completion time would skip rows committed while this sync is in flight.
     let remote_cursor = Utc::now();
-    let (devices, events, subscriptions) = pull_remote(
+    let (devices, events, subscriptions, quota_snapshots) = pull_remote(
         &client,
         &config,
         &session.access_token,
@@ -81,6 +86,7 @@ pub async fn sync_now(database: &Database) -> Result<SyncReport, SyncError> {
     report.downloaded_devices = apply_remote_devices(database, &devices)?;
     report.downloaded_events = apply_remote_events(database, &events)?;
     report.synced_subscriptions += apply_remote_subscriptions(database, &subscriptions)?;
+    report.downloaded_quota_snapshots = quota::apply_remote_snapshots(database, &quota_snapshots)?;
 
     upload_device(&client, &config, &session.access_token, database).await?;
     loop {
@@ -119,6 +125,23 @@ pub async fn sync_now(database: &Database) -> Result<SyncReport, SyncError> {
         mark_subscriptions_synced(database)?;
         report.synced_subscriptions += pending_subscriptions.len();
     }
+    let pending_quota = quota::pending_snapshots(database)?;
+    if !pending_quota.is_empty() {
+        post_upsert(
+            &client,
+            &config,
+            &session.access_token,
+            "provider_quota_snapshots",
+            &pending_quota,
+        )
+        .await?;
+        let ids = pending_quota
+            .iter()
+            .filter_map(|snapshot| snapshot.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        quota::mark_snapshots_synced(database, &ids)?;
+        report.uploaded_quota_snapshots = ids.len();
+    }
     report.completed_at = Utc::now();
     mark_sync_complete(database, remote_cursor, report.completed_at)?;
     Ok(report)
@@ -130,7 +153,7 @@ async fn pull_remote(
     access_token: &str,
     database: &Database,
     remote_cursor: DateTime<Utc>,
-) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>), SyncError> {
+) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>, Vec<Value>), SyncError> {
     let last_sync = Connection::open(database.path())?
         .query_row(
             "SELECT value FROM sync_state WHERE key = 'last_remote_sync'",
@@ -170,7 +193,17 @@ async fn pull_remote(
         "select=*&order=updated_at.asc,id.asc",
     )
     .await?;
-    Ok((devices, events, subscriptions))
+    let quota_snapshots = get_rows(
+        client,
+        config,
+        access_token,
+        "provider_quota_snapshots",
+        &format!(
+            "select=*&updated_at=gt.{encoded}&updated_at=lte.{encoded_cursor}&order=updated_at.asc,id.asc"
+        ),
+    )
+    .await?;
+    Ok((devices, events, subscriptions, quota_snapshots))
 }
 
 async fn get_rows(
@@ -241,14 +274,7 @@ async fn post_upsert(
             }
         ))
         .header("apikey", &config.client_key)
-        .header(
-            "Prefer",
-            if table == "usage_events" {
-                "resolution=ignore-duplicates,return=minimal"
-            } else {
-                "resolution=merge-duplicates,return=minimal"
-            },
-        )
+        .header("Prefer", "resolution=merge-duplicates,return=minimal")
         .bearer_auth(access_token)
         .json(payload)
         .send()
@@ -269,8 +295,10 @@ fn pending_events(database: &Database, limit: i64) -> Result<Vec<Value>, SyncErr
     let connection = Connection::open(database.path())?;
     let mut statement = connection.prepare(
         "SELECT id, device_id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
-                model, project_name, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens,
-                total_tokens, estimated_api_value_usd_micros, pricing_status, measurement_kind, created_at, updated_at
+                model, project_name, input_tokens, cached_input_tokens, cache_write_tokens,
+                cache_write_5m_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens,
+                total_tokens, estimated_api_value_usd_micros, native_cost_usd_ticks,
+                pricing_status, measurement_kind, created_at, updated_at, superseded_by_event_id
          FROM usage_events WHERE sync_status IN ('pending', 'error') ORDER BY created_at LIMIT ?1",
     )?;
     let rows = statement.query_map([limit], |row| {
@@ -279,12 +307,18 @@ fn pending_events(database: &Database, limit: i64) -> Result<Vec<Value>, SyncErr
             "provider": row.get::<_, String>(2)?, "source": row.get::<_, String>(3)?,
             "source_type": row.get::<_, String>(4)?, "native_session_id": row.get::<_, String>(5)?,
             "native_event_id": row.get::<_, String>(6)?, "occurred_at": row.get::<_, String>(7)?,
-            "model": row.get::<_, Option<String>>(8)?, "project_name": row.get::<_, Option<String>>(9)?,
+            "model": row.get::<_, Option<String>>(8)?.as_deref().and_then(crate::domain::safe_identifier), "project_name": row.get::<_, Option<String>>(9)?,
             "input_tokens": row.get::<_, i64>(10)?, "cached_input_tokens": row.get::<_, i64>(11)?,
-            "output_tokens": row.get::<_, i64>(12)?, "reasoning_tokens": row.get::<_, i64>(13)?,
-            "total_tokens": row.get::<_, i64>(14)?, "estimated_api_value_usd_micros": row.get::<_, Option<i64>>(15)?,
-            "pricing_status": row.get::<_, String>(16)?, "measurement_kind": row.get::<_, String>(17)?,
-            "created_at": row.get::<_, String>(18)?, "updated_at": row.get::<_, String>(19)?
+            "cache_write_tokens": row.get::<_, i64>(12)?,
+            "cache_write_5m_tokens": row.get::<_, i64>(13)?,
+            "cache_write_1h_tokens": row.get::<_, i64>(14)?,
+            "output_tokens": row.get::<_, i64>(15)?,
+            "reasoning_tokens": row.get::<_, i64>(16)?, "total_tokens": row.get::<_, i64>(17)?,
+            "estimated_api_value_usd_micros": row.get::<_, Option<i64>>(18)?,
+            "native_cost_usd_ticks": row.get::<_, Option<i64>>(19)?,
+            "pricing_status": row.get::<_, String>(20)?, "measurement_kind": row.get::<_, String>(21)?,
+            "created_at": row.get::<_, String>(22)?, "updated_at": row.get::<_, String>(23)?,
+            "superseded_by_event_id": row.get::<_, Option<String>>(24)?
         }))
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -356,16 +390,36 @@ fn apply_remote_events(database: &Database, rows: &[Value]) -> Result<usize, Syn
         }
         applied += transaction.execute(
             "INSERT INTO usage_events(id, provider, source, source_type, native_session_id, native_event_id, occurred_at,
-               model, project_name, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
-               estimated_api_value_usd_micros, pricing_status, measurement_kind, device_id, created_at, updated_at, sync_status)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,'synced')
-             ON CONFLICT(id) DO NOTHING",
+               model, project_name, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
+               cache_write_5m_tokens, cache_write_1h_tokens, reasoning_tokens, total_tokens,
+               estimated_api_value_usd_micros, native_cost_usd_ticks, pricing_status,
+               measurement_kind, device_id, created_at, updated_at, superseded_by_event_id, sync_status)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,'synced')
+             ON CONFLICT(id) DO UPDATE SET
+               provider=excluded.provider, source=excluded.source, source_type=excluded.source_type,
+               native_session_id=excluded.native_session_id, native_event_id=excluded.native_event_id,
+               occurred_at=excluded.occurred_at, model=excluded.model, project_name=excluded.project_name,
+               input_tokens=excluded.input_tokens, cached_input_tokens=excluded.cached_input_tokens,
+               cache_write_tokens=excluded.cache_write_tokens,
+               cache_write_5m_tokens=excluded.cache_write_5m_tokens,
+               cache_write_1h_tokens=excluded.cache_write_1h_tokens,
+               output_tokens=excluded.output_tokens,
+               reasoning_tokens=excluded.reasoning_tokens, total_tokens=excluded.total_tokens,
+               estimated_api_value_usd_micros=excluded.estimated_api_value_usd_micros,
+               native_cost_usd_ticks=excluded.native_cost_usd_ticks, pricing_status=excluded.pricing_status,
+               measurement_kind=excluded.measurement_kind, superseded_by_event_id=excluded.superseded_by_event_id,
+               updated_at=excluded.updated_at, sync_status='synced'
+             WHERE excluded.updated_at > usage_events.updated_at",
             params![id, string(row,"provider"), string(row,"source"), string(row,"source_type"), string(row,"native_session_id"),
-              string(row,"native_event_id"), string(row,"occurred_at"), row.get("model").and_then(Value::as_str),
+              string(row,"native_event_id"), string(row,"occurred_at"), row.get("model").and_then(Value::as_str).and_then(crate::domain::safe_identifier),
               row.get("project_name").and_then(Value::as_str), integer(row,"input_tokens"), integer(row,"cached_input_tokens"),
-              integer(row,"output_tokens"), integer(row,"reasoning_tokens"), integer(row,"total_tokens"),
-              row.get("estimated_api_value_usd_micros").and_then(Value::as_i64), string(row,"pricing_status"),
-              string(row,"measurement_kind"), string(row,"device_id"), string(row,"created_at"), string(row,"updated_at")],
+              integer(row,"cache_write_tokens"), integer(row,"output_tokens"),
+              integer(row,"cache_write_5m_tokens"), integer(row,"cache_write_1h_tokens"),
+              integer(row,"reasoning_tokens"), integer(row,"total_tokens"),
+              row.get("estimated_api_value_usd_micros").and_then(Value::as_i64),
+              row.get("native_cost_usd_ticks").and_then(Value::as_i64), string(row,"pricing_status"),
+              string(row,"measurement_kind"), string(row,"device_id"), string(row,"created_at"),
+              string(row,"updated_at"), row.get("superseded_by_event_id").and_then(Value::as_str)],
         )?;
     }
     transaction.commit()?;
@@ -495,6 +549,54 @@ mod tests {
     }
 
     #[test]
+    fn path_shaped_model_metadata_never_crosses_sync_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("model-privacy.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let event = UsageEvent::measured(
+            "codex",
+            "codex_cli",
+            "session",
+            "turn",
+            Utc::now(),
+            Some("org/Qwen:4b".into()),
+            None,
+            TokenCounts {
+                input_tokens: 100,
+                output_tokens: 20,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            &device.id,
+        );
+        database.insert_usage_events(&[event]).unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        // Simulate a row produced by a legacy client; never upload its model path.
+        connection
+            .execute(
+                "UPDATE usage_events SET model='/Users/never-store/Qwen'",
+                [],
+            )
+            .unwrap();
+        let mut payload = pending_events(&database, 10).unwrap().remove(0);
+        assert!(payload["model"].is_null());
+        assert!(!payload.to_string().contains("never-store"));
+        // Incoming legacy metadata retains measured counters with model unavailable.
+        payload["id"] = json!("a".repeat(64));
+        payload["native_event_id"] = json!("remote-turn");
+        payload["model"] = json!(r"C:\Users\never-store\Qwen");
+        assert_eq!(apply_remote_events(&database, &[payload]).unwrap(), 1);
+        let stored: (Option<String>, i64) = connection
+            .query_row(
+                "SELECT model,total_tokens FROM usage_events WHERE id=?1",
+                ["a".repeat(64)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, (None, 120));
+    }
+
+    #[test]
     fn retry_is_exponential_and_capped() {
         let policy = RetryPolicy::default();
         assert_eq!(policy.delay(0), Duration::from_secs(2));
@@ -517,14 +619,22 @@ mod tests {
             Some("ArcMeter".into()),
             TokenCounts {
                 input_tokens: 10,
+                cache_write_tokens: 3,
                 output_tokens: 2,
                 total_tokens: 12,
                 ..Default::default()
             },
             device.id.clone(),
         );
+        let local_id = local.id.clone();
         database.insert_usage_events(&[local]).unwrap();
-        assert_eq!(pending_events(&database, 250).unwrap().len(), 1);
+        let pending = pending_events(&database, 250).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["cache_write_tokens"], 3);
+        assert_eq!(pending[0]["cache_write_5m_tokens"], 0);
+        assert_eq!(pending[0]["cache_write_1h_tokens"], 0);
+        assert!(pending[0]["native_cost_usd_ticks"].is_null());
+        assert!(pending[0]["superseded_by_event_id"].is_null());
 
         let timestamp = Utc::now().to_rfc3339();
         let remote = json!({
@@ -540,14 +650,19 @@ mod tests {
             "project_name": "ArcMeter",
             "input_tokens": 20,
             "cached_input_tokens": 5,
+            "cache_write_tokens": 3,
+            "cache_write_5m_tokens": 2,
+            "cache_write_1h_tokens": 1,
             "output_tokens": 4,
             "reasoning_tokens": 0,
             "total_tokens": 24,
             "estimated_api_value_usd_micros": 65,
+            "native_cost_usd_ticks": 120_000_000,
             "pricing_status": "available",
             "measurement_kind": "measured",
             "created_at": timestamp,
-            "updated_at": timestamp
+            "updated_at": timestamp,
+            "superseded_by_event_id": local_id
         });
         assert_eq!(
             apply_remote_events(&database, std::slice::from_ref(&remote)).unwrap(),
@@ -564,5 +679,193 @@ mod tests {
             )
             .unwrap();
         assert_eq!((events, tokens), (2, 36));
+        let synced_metadata: (i64, i64, i64, Option<i64>, Option<String>) = connection
+            .query_row(
+                "SELECT cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+                   native_cost_usd_ticks, superseded_by_event_id
+                 FROM usage_events WHERE id = ?1",
+                ["b".repeat(64)],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            synced_metadata,
+            (3, 2, 1, Some(120_000_000), Some(local_id))
+        );
+    }
+
+    #[test]
+    fn richer_claude_revision_requeues_same_id_and_pulls_as_one_cloud_row() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("origin.db")).unwrap();
+        let device = database.ensure_device("test").unwrap();
+        let initial_time = "2026-08-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut initial = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session-123",
+            "request:req-123",
+            initial_time,
+            Some("claude-sonnet-5-20260801".into()),
+            Some("SyntheticProject".into()),
+            TokenCounts {
+                input_tokens: 100,
+                output_tokens: 20,
+                total_tokens: 120,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut initial)).unwrap();
+        let event_id = initial.id.clone();
+        let write = database.upsert_claude_request_events(&[initial]).unwrap();
+        assert_eq!((write.inserted, write.updated), (1, 0));
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                "UPDATE usage_events SET updated_at = '2026-08-29T00:00:00Z' WHERE id = ?1",
+                [&event_id],
+            )
+            .unwrap();
+        let initial_payload = pending_events(&database, 250).unwrap();
+        assert_eq!(initial_payload.len(), 1);
+        assert_eq!(initial_payload[0]["id"], event_id);
+        assert_eq!(initial_payload[0]["total_tokens"], 120);
+        mark_events_synced(&database, &[&event_id]).unwrap();
+        assert!(pending_events(&database, 250).unwrap().is_empty());
+
+        let mut richer = UsageEvent::measured(
+            "claude",
+            "claude_code",
+            "session-123",
+            "request:req-123",
+            "2026-08-29T00:01:00Z".parse::<DateTime<Utc>>().unwrap(),
+            Some("claude-sonnet-5-20260801".into()),
+            Some("SyntheticProject".into()),
+            TokenCounts {
+                input_tokens: 100,
+                cached_input_tokens: 50,
+                cache_write_tokens: 20,
+                cache_write_5m_tokens: 12,
+                cache_write_1h_tokens: 8,
+                output_tokens: 40,
+                total_tokens: 210,
+                ..Default::default()
+            },
+            device.id.clone(),
+        );
+        crate::pricing::price_usage_events(&database, std::slice::from_mut(&mut richer)).unwrap();
+        assert_eq!(richer.id, event_id);
+        let write = database.upsert_claude_request_events(&[richer]).unwrap();
+        assert_eq!((write.inserted, write.updated), (0, 1));
+        let revised_payload = pending_events(&database, 250).unwrap();
+        assert_eq!(revised_payload.len(), 1);
+        assert_eq!(revised_payload[0]["id"], event_id);
+        assert_eq!(revised_payload[0]["total_tokens"], 210);
+        assert_eq!(revised_payload[0]["cache_write_5m_tokens"], 12);
+        assert!(
+            revised_payload[0]["updated_at"].as_str().unwrap()
+                > initial_payload[0]["updated_at"].as_str().unwrap()
+        );
+
+        let receiver_directory = tempfile::tempdir().unwrap();
+        let receiver = Database::open(receiver_directory.path().join("receiver.db")).unwrap();
+        receiver.ensure_device("test").unwrap();
+        let origin_device = json!({
+            "id": device.id,
+            "friendly_name": "Origin",
+            "os": "windows",
+            "architecture": "x86_64",
+            "app_version": "test",
+            "created_at": "2026-08-29T00:00:00Z",
+            "last_seen_at": "2026-08-29T00:01:00Z",
+            "last_sync_at": "2026-08-29T00:01:00Z"
+        });
+        assert_eq!(
+            apply_remote_devices(&receiver, &[origin_device]).unwrap(),
+            1
+        );
+        assert_eq!(apply_remote_events(&receiver, &initial_payload).unwrap(), 1);
+        assert_eq!(apply_remote_events(&receiver, &revised_payload).unwrap(), 1);
+        let received: (i64, i64, String) = Connection::open(receiver.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*), total_tokens, id FROM usage_events WHERE id = ?1",
+                [&event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(received, (1, 210, event_id));
+    }
+
+    #[test]
+    fn local_hourly_usage_syncs_as_one_revisable_row_without_inventory_or_endpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = Database::open(directory.path().join("origin.db")).unwrap();
+        let device = origin.ensure_device("test").unwrap();
+        crate::local_models::configure(&origin, "omlx", true, Some("http://127.0.0.1:8009/v1"))
+            .unwrap();
+        let path = directory.path().join("usage.sqlite3");
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch("PRAGMA user_version=1; CREATE TABLE model_usage_hourly(timestamp_hour INTEGER,
+          model_id TEXT,requests INTEGER,prompt_tokens INTEGER,completion_tokens INTEGER,cached_tokens INTEGER);
+          INSERT INTO model_usage_hourly VALUES(1750000000,'Qwen',2,100,20,30);").unwrap();
+        crate::local_models::omlx::collect_path(&origin, &device.id, &path).unwrap();
+        let initial = pending_events(&origin, 250).unwrap();
+        assert_eq!(initial.len(), 1);
+        let payload = serde_json::to_string(&initial).unwrap();
+        for forbidden in [
+            "127.0.0.1",
+            "endpoint",
+            "models_json",
+            "requests",
+            "usage.sqlite3",
+            "prompt\"",
+            "response",
+        ] {
+            assert!(!payload.contains(forbidden), "{forbidden}");
+        }
+        mark_events_synced(&origin, &[initial[0]["id"].as_str().unwrap()]).unwrap();
+        crate::local_models::omlx::collect_path(&origin, &device.id, &path).unwrap();
+        assert!(pending_events(&origin, 250).unwrap().is_empty());
+        source
+            .execute(
+                "UPDATE model_usage_hourly SET prompt_tokens=150,completion_tokens=40,requests=3",
+                [],
+            )
+            .unwrap();
+        crate::local_models::omlx::collect_path(&origin, &device.id, &path).unwrap();
+        let revised = pending_events(&origin, 250).unwrap();
+        assert_eq!(initial[0]["id"], revised[0]["id"]);
+        let receiver = Database::open(directory.path().join("receiver.db")).unwrap();
+        receiver.ensure_device("test").unwrap();
+        apply_remote_devices(&receiver,&[json!({"id":device.id,"friendly_name":"Origin","os":"macos",
+            "architecture":"aarch64","app_version":"test","created_at":device.created_at,"last_seen_at":device.last_seen_at})]).unwrap();
+        apply_remote_events(&receiver, &initial).unwrap();
+        apply_remote_events(&receiver, &revised).unwrap();
+        apply_remote_events(&receiver, &revised).unwrap();
+        let received: (i64, i64) = Connection::open(receiver.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*),SUM(total_tokens) FROM usage_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(received, (1, 190));
+        assert_eq!(
+            crate::local_models::snapshot(&receiver)
+                .unwrap()
+                .requests_today,
+            None
+        );
     }
 }

@@ -1,6 +1,6 @@
 # ArcMeter signed updates
 
-ArcMeter checks for signed updates in the background and exposes a manual check in **Settings → Application → Signed updates**. A newer release is never installed silently. The user must choose **Install**, and the updater verifies the downloaded bundle against the public key compiled into ArcMeter before it replaces the installed version.
+ArcMeter checks for signed updates in the background and exposes a manual check in **Settings → Updates → Signed updates**. A newer release is never installed silently. The user must choose **Install**, and the updater verifies the downloaded bundle against the public key compiled into ArcMeter before it replaces the installed version.
 
 The stable update endpoint is:
 
@@ -9,6 +9,10 @@ https://github.com/kingnazz/ArcMeter/releases/latest/download/latest.json
 ```
 
 The initial `0.2.0` installation is the bootstrap release: an older build without the updater still needs one manual installer update. After `0.2.0` is installed, later versions can arrive through the in-app flow.
+
+Version `0.2.1` is the first updater-delivered maintenance release. It keeps safely priced API-equivalent value visible as a lower-bound subtotal when the selected period also contains events whose model pricing cannot be verified.
+
+Version `0.2.2` adds historical public API list pricing for the models found in the first year of ArcMeter telemetry and a clearly labeled 1×–10× unsubsidized-price scenario calculator. Existing local events are repriced once after the database migration; deterministic event IDs and sync idempotency are unchanged.
 
 ## Signing identity
 
