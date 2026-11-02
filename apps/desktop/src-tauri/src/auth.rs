@@ -394,6 +394,9 @@ mod tests {
                     Err(error) => panic!("test server accept failed: {error}"),
                 }
             };
+            // Accepted sockets can inherit the listener's nonblocking flag on
+            // macOS. The bounded request reader below expects blocking reads.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(StdDuration::from_secs(5)))
                 .unwrap();
